@@ -90,8 +90,10 @@ Class AzureController : TestController
 			if (!$this.CustomParams["TipSessionId"] -or !$this.CustomParams["TipCluster"]) {
 				$parameterErrors += "Both 'TipSessionId' and 'TipCluster' are necessary in CustomParameters when Run-LISAv2 with TiP."
 			}
-			if (!$this.UseExistingRG) {
-				$parameterErrors += "'-UseExistingRG' is necessary when Run-LISAv2 with 'TiPSessionId' and 'TiPCluster'."
+			# Force $this.UseExistingRG = $true when testing with TiP, and always stick to the provided Resoruce Group by '-RGIdentifier'
+			$this.UseExistingRG = $true
+			if (!$this.RGIdentifier) {
+				$parameterErrors += "'-RGIdentifier' is necessary when Run-LISAv2 with 'TiPSessionId' and 'TiPCluster'."
 			}
 			if (!$this.TestLocation) {
 				$parameterErrors += "'-TestLocation' is necessary when Run-LISAv2 with 'TiPSessionId' and 'TiPCluster'."
@@ -139,16 +141,41 @@ Class AzureController : TestController
 			}
 			if ($this.UseExistingRG) {
 				if (!$this.RGIdentifier) {
-					throw "'-RGIdentifier' is necessary and its value must be an existing Resource Group Name when Run-LISAv2 with '-UseExistingRG' on Azure Platform."
+					throw "'-RGIdentifier' is not set when using '-UseExistingRG' switch on Azure Platform. Please provide an exact resource group name following '-RGIdentifier'"
 				}
 				else {
-					$existingRG = Get-AzResourceGroup -Name $this.RGIdentifier
+					$existingRG = Get-AzResourceGroup -Name $this.RGIdentifier -ErrorAction SilentlyContinue
 					if (!$existingRG) {
-						throw "'-RGIdentifier' must be an existing Resource Group Name when Run-LISAv2 with '-UseExistingRG' on Azure Platform."
+						if ($this.CustomParams["TipSessionId"] -or $this.CustomParams["TipCluster"]) {
+							# Create resource group for TiP if resource group does not exist, as '$this.TestLocation' always available after ParseAndValidateParameters()
+							Write-LogInfo "Resource group '$($this.RGIdentifier)' does not exist, create it for TiP"
+							Create-ResourceGroup -RGName $this.RGIdentifier -location $this.TestLocation | Out-Null
+						}
+						else {
+							throw "'-RGIdentifier' must be an existing Resource Group Name when Run-LISAv2 with '-UseExistingRG' on Azure Platform"
+						}
 					}
 					else {
-						if (($this.CustomParams["TipSessionId"] -or $this.CustomParams["TipCluster"]) -and (Get-AzResource -ResourceGroupName $this.RGIdentifier | Where-Object { $_.ResourceType -inotmatch "availabilitySets" })) {
-							throw "Existing Resource Group '$($this.RGIdentifier)' is not clean, please remove all other resources, except 'availabilitySets' resource type."
+						$allExistingResources = Get-AzResource -ResourceGroupName $this.RGIdentifier
+						if (($this.CustomParams["TipSessionId"] -or $this.CustomParams["TipCluster"]) -and $allExistingResources) {
+							Write-LogInfo "Try to cleanup all resources from Resource Group '$($this.RGIdentifier)' for testing with TiP..."
+							$isResoruceCleanedExceptAvailabilitySet = Delete-ResourceGroup -RGName $this.RGIdentifier -UseExistingRG $this.UseExistingRG
+							if ($isResoruceCleanedExceptAvailabilitySet) {
+								$allExistingResources | Where-Object { $_.ResourceType -imatch "availabilitySets" } | ForEach-Object {
+									if (Remove-AzResource -ResourceGroupName $this.RGIdentifier -ResourceName $_.Name -ResourceType $_.ResourceType -Force) {
+										Write-LogInfo "`tCleanup resource group '$($this.RGIdentifier)' successfully."
+									}
+									else {
+										throw "Failed to cleanup resources from '$($this.RGIdentifier)', please remove all resources manually."
+									}
+								}
+							}
+							else {
+								throw "Failed to cleanup resources from '$($this.RGIdentifier)', please remove all resources manually."
+							}
+						}
+						elseif (!$allExistingResources) {
+							Write-LogInfo "Resource group '$($this.RGIdentifier)' is empty, new resources will be deployed"
 						}
 					}
 				}
