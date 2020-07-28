@@ -189,7 +189,7 @@
 	<testScript>TIME-CLOCKEVENT.sh</testScript>
 	<files>.\TestScripts\Linux\TIME-CLOCKEVENT.sh,.\TestScripts\Linux\utils.sh</files>
 	<TestParameters>
-	<param>VCPU=1</param>
+	<param>VCPU=420</param>
 	</TestParameters>
 	<Platform>Azure,HyperV</Platform>
 	<Category>Functional</Category>
@@ -205,7 +205,7 @@
 	<testScript>TIME-CLOCKEVENT.sh</testScript>
 	<files>.\TestScripts\Linux\TIME-CLOCKEVENT.sh,.\TestScripts\Linux\utils.sh</files>
 	<TestParameters>
-	<param>VCPU=8</param>
+	<param>VCPU=420</param>
 	</TestParameters>
 	<Platform>Azure,HyperV</Platform>
 	<Category>Functional</Category>
