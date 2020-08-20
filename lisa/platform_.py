@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import UserDict
+from functools import partial
 from typing import TYPE_CHECKING, Dict, List, Optional, Type, cast
 
 from lisa.util import constants
@@ -11,12 +12,18 @@ from lisa.util.logger import get_logger
 if TYPE_CHECKING:
     from lisa.environment import Environment
 
+_get_init_logger = partial(get_logger, "init", "platform")
+
 
 class Platform(ABC):
     @classmethod
     @abstractmethod
     def platform_type(cls) -> str:
         raise NotImplementedError()
+
+    @property
+    def extended_schema(self) -> Dict[str, object]:
+        return dict()
 
     @abstractmethod
     def config(self, key: str, value: object) -> None:
@@ -71,10 +78,11 @@ class Platforms(PlatformDict):
             )
 
 
-def initialize_platforms(config: List[Dict[str, object]]) -> None:
+def load_platforms(config: List[Dict[str, object]]) -> None:
     if not config:
         raise LisaException("cannot find platform")
 
+    log = _get_init_logger()
     # we may extend it later to support multiple platforms
     platform_count = len(config)
     if platform_count != 1:
@@ -83,14 +91,6 @@ def initialize_platforms(config: List[Dict[str, object]]) -> None:
     if platform_type is None:
         raise LisaException("type of platfrom shouldn't be None")
 
-    for sub_class in Platform.__subclasses__():
-        platform_class = cast(Type[Platform], sub_class)
-        platforms.register_platform(platform_class)
-    log = get_logger("init", "platform")
-    log.debug(
-        f"registered platforms: " f"[{', '.join([name for name in platforms.keys()])}]"
-    )
-
     platform = platforms.get(platform_type.lower())
     if platform is None:
         raise LisaException(f"cannot find platform type '{platform_type}'")
@@ -98,6 +98,16 @@ def initialize_platforms(config: List[Dict[str, object]]) -> None:
 
     platform.config(constants.CONFIG_CONFIG, config[0])
     platforms.default = platform
+
+
+def initialize_platforms() -> None:
+    for sub_class in Platform.__subclasses__():
+        platform_class = cast(Type[Platform], sub_class)
+        platforms.register_platform(platform_class)
+    log = _get_init_logger()
+    log.debug(
+        f"registered platforms: " f"[{', '.join([name for name in platforms.keys()])}]"
+    )
 
 
 platforms = Platforms()

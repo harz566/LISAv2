@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, cast
 
 import yaml
 
-from lisa.schema import validate_config
+from lisa.schema import normalize_config
 from lisa.util import constants
 from lisa.util.logger import get_logger
 
@@ -19,17 +19,16 @@ class Config(ConfigDict):
     def __init__(
         self,
         base_path: Optional[Path] = None,
-        config: Optional[Dict[str, object]] = None,
+        data: Optional[Dict[str, object]] = None,
     ) -> None:
         super().__init__()
         if base_path is not None:
             self.base_path = base_path
-        if config is not None:
-            self._config: Dict[str, object] = config
+        if data is not None:
+            self._data: Dict[str, object] = data
 
     def validate(self) -> None:
-        # TODO implement config validation
-        pass
+        self._data = normalize_config(self._data)
 
     @property
     def extension(self) -> Dict[str, object]:
@@ -41,9 +40,7 @@ class Config(ConfigDict):
 
     @property
     def platform(self) -> List[Dict[str, object]]:
-        return cast(
-            List[Dict[str, object]], self._config.get(constants.PLATFORM, list())
-        )
+        return cast(List[Dict[str, object]], self._data.get(constants.PLATFORM, list()))
 
     @property
     def testcase(self) -> Dict[str, object]:
@@ -54,10 +51,14 @@ class Config(ConfigDict):
     # trying to get, this indicates that we need to properly structure
     # said data. Doing so correctly will enable us to delete this.
     def _get_and_cast(self, name: str) -> Dict[str, object]:
-        return cast(Dict[str, object], self._config.get(name, dict()))
+        return cast(Dict[str, object], self._data.get(name, dict()))
 
 
-def parse_to_config(args: Namespace) -> Config:
+def load(args: Namespace,) -> Config:
+    """
+    load config, not to validate it, since some extended schemas are not ready
+    before extended modules imported.
+    """
     path = Path(args.config).absolute()
     log = get_logger("parser")
 
@@ -67,9 +68,6 @@ def parse_to_config(args: Namespace) -> Config:
 
     with open(path, "r") as file:
         data = yaml.safe_load(file)
-
-    # load schema
-    validate_config(data)
 
     log.debug(f"final config data: {data}")
     base_path = path.parent

@@ -5,8 +5,9 @@ from pathlib import Path, PurePath
 from typing import Dict, Iterable, List, Optional, cast
 
 from lisa.environment import environments, load_environments
-from lisa.parameter_parser.config import Config, parse_to_config
-from lisa.platform_ import initialize_platforms, platforms
+from lisa.parameter_parser.config import Config
+from lisa.parameter_parser.config import load as load_config
+from lisa.platform_ import initialize_platforms, load_platforms, platforms
 from lisa.sut_orchestrator.ready import ReadyPlatform
 from lisa.test_runner.lisarunner import LISARunner
 from lisa.testselector import select_testcases
@@ -33,17 +34,22 @@ def _initialize(args: Namespace) -> Iterable[TestCaseData]:
     base_module_path = Path(__file__).parent
     import_module(base_module_path, logDetails=False)
 
-    # merge all parameters
-    config = parse_to_config(args)
+    initialize_platforms()
 
-    # load external extension
+    # merge all parameters
+    config = load_config(args)
+
+    # load extended modules
     _load_extends(config.base_path, config.extension)
+
+    # validate config, after extensions loaded
+    config.validate()
 
     # initialize environment
     load_environments(config.environment)
 
     # initialize platform
-    initialize_platforms(config.platform)
+    load_platforms(config.platform)
 
     # filter test cases
     selected_cases = select_testcases(config.testcase)
