@@ -67,6 +67,7 @@ Class TestController
 	[bool] $DeployVMPerEachTest
 	[string] $ResultDBTable
 	[string] $ResultDBTestTag
+	[string] $TestPassID
 	[bool] $UseExistingRG
 	[array] $TestCaseStatus
 	[array] $TestCasePassStatus
@@ -74,6 +75,10 @@ Class TestController
 	[Hashtable] $CustomParams
 	[string] $VMGeneration
 	[bool] $ForceCustom # For overwrite custom parameters or not
+	[bool] $RunInParallel
+	[int] $TotalCountInParallel
+	[object] $ParamsInParallel
+	[string] $TestIdInParallel
 
 	[void] SyncEquivalentCustomParameters([string] $Key, [string] $Value) {
 		if ($Value) {
@@ -108,6 +113,7 @@ Class TestController
 		$this.DeployVMPerEachTest = $ParamTable["DeployVMPerEachTest"]
 		$this.ResultDBTable = $ParamTable["ResultDBTable"]
 		$this.ResultDBTestTag = $ParamTable["ResultDBTestTag"]
+		$this.TestPassID = $ParamTable["TestPassID"]
 		$this.UseExistingRG = $ParamTable["UseExistingRG"]
 		$this.EnableCodeCoverage = $ParamTable["EnableCodeCoverage"]
 		$this.VMGeneration = $ParamTable["VMGeneration"]
@@ -124,6 +130,13 @@ Class TestController
 			}
 		}
 		$this.ForceCustom = ($ParamTable.ContainsKey("ForceCustom"))
+		$this.RunInParallel = ($ParamTable.ContainsKey("RunInParallel"))
+		$this.TotalCountInParallel = $ParamTable["TotalCountInParallel"]
+		if (!$this.TotalCountInParallel) {
+			$this.TotalCountInParallel = (Get-WmiObject -class Win32_ComputerSystem).numberoflogicalprocessors
+		}
+		$this.ParamsInParallel = $ParamTable["ParamsInParallel"]
+		$this.TestIdInParallel = $ParamTable["TestIdInParallel"]
 		$GlobalConfigurationFile = "$PSScriptRoot\..\XML\GlobalConfigurations.xml"
 		if (Test-Path -Path $GlobalConfigurationFile) {
 			$this.GlobalConfigurationFilePath = $GlobalConfigurationFile
@@ -250,19 +263,8 @@ Class TestController
 	[void] LoadTestCases($WorkingDirectory, $CustomTestParameters) {
 		$this.SetupTypeToTestCases = @{}
 		$this.SetupTypeTable = @{}
-		$TestXMLs = Get-ChildItem -Path "$WorkingDirectory\XML\TestCases\*.xml"
+		$allTests = $null
 		$SetupTypeXMLs = Get-ChildItem -Path "$WorkingDirectory\XML\VMConfigurations\*.xml"
-		$ReplaceableTestParameters = [xml](Get-Content -Path "$WorkingDirectory\XML\Other\ReplaceableTestParameters.xml")
-
-		$allTests = Select-TestCases -TestXMLs $TestXMLs -TestCategory $this.TestCategory -TestArea $this.TestArea -TestSetup $this.TestSetup `
-			-TestNames $this.TestNames -TestTag $this.TestTag -TestPriority $this.TestPriority -ExcludeTests $this.ExcludeTests
-
-		if (!$allTests) {
-			Throw "Not able to collect any test cases from XML files"
-		}
-		$collectedTCCount = $allTests.Count
-		Write-LogInfo "$collectedTCCount Test Cases have been collected"
-
 		foreach ($file in $SetupTypeXMLs.FullName) {
 			$setupXml = [xml]( Get-Content -Path $file)
 			foreach ($setupTypeXml in $setupXml.SelectNodes("/TestSetup/*")) {
@@ -274,52 +276,100 @@ Class TestController
 				}
 			}
 		}
-
-		# Inject custom parameters
-		if ($CustomTestParameters) {
-			Write-LogInfo "Checking custom parameters ..."
-			$CustomTestParameters = @($CustomTestParameters.Trim("; ").Split(";").Trim())
-			foreach ($CustomParameter in $CustomTestParameters)
-			{
-				$ReplaceThis = $CustomParameter.Split("=")[0]
-				$ReplaceWith = $CustomParameter.Substring($CustomParameter.IndexOf("=")+1)
-
-				$OldValue = ($ReplaceableTestParameters.ReplaceableTestParameters.Parameter | Where-Object `
-					{ $_.ReplaceThis -eq $ReplaceThis }).ReplaceWith
-				($ReplaceableTestParameters.ReplaceableTestParameters.Parameter | Where-Object `
-					{ $_.ReplaceThis -eq $ReplaceThis }).ReplaceWith = $ReplaceWith
-				Write-LogInfo "Custom Parameter: $ReplaceThis=$OldValue --> $ReplaceWith"
+		if ($this.TestIdInParallel) {
+			Write-LogWarn "Testing under parallel with TestId '$($this.TestIdInParallel)', all SetupConfig and Test Case Filtering parameters will be ignored."
+			$parallelTestsFilePath = Join-Path -Path $env:TEMP -ChildPath "AllTests.xml"
+			if (Test-Path -Path $parallelTestsFilePath) {
+				$parallelTestsDoc = [xml](Get-Content $parallelTestsFilePath)
+				$allTests = [System.Collections.ArrayList]@($parallelTestsDoc.TestCases.test)
 			}
-			Write-LogInfo "Custom parameter(s) are ready to be injected along with default parameters, if any."
 		}
-
-		foreach ($test in $allTests) {
-			# Inject replaceable parameters
-			foreach ($ReplaceableParameter in $ReplaceableTestParameters.ReplaceableTestParameters.Parameter) {
-				$replaceWith = [System.Security.SecurityElement]::Escape($ReplaceableParameter.ReplaceWith)
-				$FindReplaceArray = @(
-					("=$($ReplaceableParameter.ReplaceThis)<" ,"=$($replaceWith)<" ),
-					("=`"$($ReplaceableParameter.ReplaceThis)`"" ,"=`"$($replaceWith)`""),
-					(">$($ReplaceableParameter.ReplaceThis)<" ,">$($replaceWith)<")
-				)
-				foreach ($item in $FindReplaceArray) {
-					$Find = $item[0]
-					$Replace = $item[1]
-					if ($test.InnerXml -imatch $Find) {
-						$test.InnerXml = $test.InnerXml.Replace($Find,$Replace)
-						Write-LogInfo "$($ReplaceableParameter.ReplaceThis)=$($ReplaceableParameter.ReplaceWith) injected to case $($test.testName)"
+		else {
+			$TestXMLs = Get-ChildItem -Path "$WorkingDirectory\XML\TestCases\*.xml"
+			$allTests = Select-TestCases -TestXMLs $TestXMLs -TestCategory $this.TestCategory -TestArea $this.TestArea -TestSetup $this.TestSetup `
+				-TestNames $this.TestNames -TestTag $this.TestTag -TestPriority $this.TestPriority -ExcludeTests $this.ExcludeTests
+			$ReplaceableTestParameters = [xml](Get-Content -Path "$WorkingDirectory\XML\Other\ReplaceableTestParameters.xml")
+			# Inject custom parameters
+			if ($CustomTestParameters) {
+				Write-LogInfo "Checking custom parameters ..."
+				$CustomTestParameters = @($CustomTestParameters.Trim("; ").Split(";").Trim())
+				foreach ($CustomParameter in $CustomTestParameters)
+				{
+					$ReplaceThis = $CustomParameter.Split("=")[0]
+					$ReplaceWith = $CustomParameter.Substring($CustomParameter.IndexOf("=")+1)
+	
+					$OldValue = ($ReplaceableTestParameters.ReplaceableTestParameters.Parameter | Where-Object `
+						{ $_.ReplaceThis -eq $ReplaceThis }).ReplaceWith
+					($ReplaceableTestParameters.ReplaceableTestParameters.Parameter | Where-Object `
+						{ $_.ReplaceThis -eq $ReplaceThis }).ReplaceWith = $ReplaceWith
+					Write-LogInfo "Custom Parameter: $ReplaceThis=$OldValue --> $ReplaceWith"
+				}
+				Write-LogInfo "Custom parameter(s) are ready to be injected along with default parameters, if any."
+			}
+	
+			foreach ($test in $allTests) {
+				# Inject replaceable parameters
+				foreach ($ReplaceableParameter in $ReplaceableTestParameters.ReplaceableTestParameters.Parameter) {
+					$replaceWith = [System.Security.SecurityElement]::Escape($ReplaceableParameter.ReplaceWith)
+					$FindReplaceArray = @(
+						("=$($ReplaceableParameter.ReplaceThis)<" ,"=$($replaceWith)<" ),
+						("=`"$($ReplaceableParameter.ReplaceThis)`"" ,"=`"$($replaceWith)`""),
+						(">$($ReplaceableParameter.ReplaceThis)<" ,">$($replaceWith)<")
+					)
+					foreach ($item in $FindReplaceArray) {
+						$Find = $item[0]
+						$Replace = $item[1]
+						if ($test.InnerXml -imatch $Find) {
+							$test.InnerXml = $test.InnerXml.Replace($Find,$Replace)
+							Write-LogInfo "$($ReplaceableParameter.ReplaceThis)=$($ReplaceableParameter.ReplaceWith) injected to case $($test.testName)"
+						}
 					}
 				}
 			}
 		}
-
+		if (!$allTests) {
+			Throw "Not able to collect any test cases from XML files"
+		}
+		else {
+			$collectedTCCount = $allTests.Count
+			Write-LogInfo "$collectedTCCount Test Cases have been collected"
+		}
 		$this.PrepareSetupTypeToTestCases($this.SetupTypeToTestCases, $allTests)
-
+	
 		if (($this.TotalCaseNum -eq 0) -or ($allTests.Count -eq 0)) {
 			Write-LogWarn "All collected test cases are skipped, because the test case has native SetupConfig that conflicts with current Run-LISAv2 parameters, or LISAv2 needs more specific parameters to run against selected test cases, please check again"
 		}
 		elseif ($collectedTCCount -ne $allTests.Count) {
 			Write-LogInfo "$($allTests.Count) Test Cases have been selected or expanded to be run in this LISAv2 execution, other test cases may have been skipped due to test case native SetupConfig conflicts with current Run-LISAv2 parameters"
+		}
+
+		if ($this.RunInParallel -and !$this.TestIdInParallel) {
+			$sliceCount = [math]::Ceiling($allTests.Count / $this.TotalCountInParallel)
+			for ($pIndex = 1; $pIndex -le $this.TotalCountInParallel; $pIndex++) {
+				$parallelTest = $allTests | Select-Object -First $sliceCount -Skip (($pIndex - 1) * $sliceCount)
+				if (!$parallelTest -or $parallelTest.Count -eq 0) {
+					$this.TotalCountInParallel = ($pIndex - 1)
+					break
+				}
+				$targetTestsFolder = Join-Path -Path $env:TEMP -ChildPath "$global:TestId-$pIndex"
+				if (!(Test-Path -Path $targetTestsFolder)) {
+					New-Item -Force -Path $targetTestsFolder -ItemType Directory
+				}
+				$parallelTestsFilePath = Join-Path -Path $targetTestsFolder -ChildPath "AllTests.xml"
+				if (Test-Path -Path $parallelTestsFilePath) {
+					Remove-Item -Force -Path $parallelTestsFilePath
+				}
+				[xml]$parallelTestsDoc = New-Object System.Xml.XmlDocument
+				$dec = $parallelTestsDoc.CreateXmlDeclaration("1.0","UTF-8",$null)
+				$null = $parallelTestsDoc.AppendChild($dec)
+				#$parallelTests.AppendChild($parallelTests.CreateComment($text))
+				$tcNode = $parallelTestsDoc.CreateElement("TestCases")
+				$parallelTest | ForEach-Object {
+					$null = $tcNode.AppendChild($parallelTestsDoc.ImportNode($_, $true))
+				}
+				$null = $parallelTestsDoc.AppendChild($tcNode)
+				$parallelTestsDoc.Save("$parallelTestsFilePath")
+			}
 		}
 	}
 
@@ -437,7 +487,7 @@ Class TestController
 			Write-LogInfo "==> Run test setup script if defined."
 			$this.TestProvider.RunSetup($VmData, $CurrentTestData, $testParameters, $ApplyCheckpoint)
 
-			if ($CurrentTestData.SetupConfig.OSType -notcontains "Windows") {
+			if (($CurrentTestData.SetupConfig.OSType -notcontains "Windows") -and ($this.CustomParams.VerifyKernelLogs -eq "True")) {
 				Write-LogInfo "==> Check the target machine kernel log."
 				$this.GetAndCompareOsLogs($VmData, "Initial")
 			}
@@ -498,9 +548,9 @@ Class TestController
 
 		try {
 			if ($CurrentTestData.SetupConfig.OSType -notcontains "Windows") {
-				if ($testParameters["SkipVerifyKernelLogs"] -ne "True") {
+				if ($this.CustomParams.VerifyKernelLogs -eq "True") {
 					$ret = $this.GetAndCompareOsLogs($VmData, "Final")
-					if (($testParameters["FailForLogCheck"] -eq "True") -and ($ret -eq $false) -and ($currentTestResult.TestResult -eq $global:ResultPass)) {
+					if (($ret -eq $false) -and ($currentTestResult.TestResult -eq $global:ResultPass)) {
 						$currentTestResult.TestResult = $global:ResultFail
 						Write-LogErr "Test $($CurrentTestData.TestName) fails for log check"
 						$currentTestResult.testSummary += New-ResultSummary -testResult "Test fails for log check"
@@ -510,8 +560,8 @@ Class TestController
 			$this.GetSystemBasicLogs($VmData, $global:user, $global:password, $CurrentTestData, $currentTestResult, $this.EnableTelemetry) | Out-Null
 
 			Write-LogInfo "==> Run test cleanup script if defined."
-			$collectDetailLogs = !$this.TestCasePassStatus.contains($currentTestResult.TestResult) -and ($CurrentTestData.SetupConfig.OSType -notcontains "Windows") -and $testParameters["SkipVerifyKernelLogs"] -ne "True" -and ((Is-VmAlive -AllVMDataObject $VmData -MaxRetryCount 5) -eq "True")
-			$doRemoveFiles = $this.TestCasePassStatus.contains($currentTestResult.TestResult) -and !($this.ResourceCleanup -imatch "Keep") -and ($CurrentTestData.SetupConfig.OSType -notcontains "Windows") -and $testParameters["SkipVerifyKernelLogs"] -ne "True"
+			$collectDetailLogs = (!$this.TestCasePassStatus.contains($currentTestResult.TestResult) -or $this.CustomParams.VerifyKernelLogs -eq "True") -and ($CurrentTestData.SetupConfig.OSType -notcontains "Windows") -and ((Is-VmAlive -AllVMDataObject $VmData -MaxRetryCount 5) -eq "True")
+			$doRemoveFiles = $this.TestCasePassStatus.contains($currentTestResult.TestResult) -and !($this.ResourceCleanup -imatch "Keep") -and ($CurrentTestData.SetupConfig.OSType -notcontains "Windows") -and $this.CustomParams.VerifyKernelLogs -ne "True"
 			$this.TestProvider.RunTestCaseCleanup($vmData, $CurrentTestData, $currentTestResult, $collectDetailLogs, $doRemoveFiles, `
 				$global:user, $global:password, $SetupTypeData, $testParameters)
 		} catch {
@@ -522,6 +572,9 @@ Class TestController
 			Write-LogErr "Source: Line $line in script $scriptName."
 		}
 
+		# Set back the LogDir to the parent folder, in order to record Test Summary
+		Set-Variable -Name "LogDir" -Value $oldLogDir -Scope Global
+
 		# Update test summary
 		$testRunDuration = $this.JunitReport.GetTestCaseElapsedTime("LISAv2Test-$($this.TestPlatform)","$currentTestName","mm")
 		$this.TestSummary.UpdateTestSummaryForCase($CurrentTestData, $ExecutionCount, $currentTestResult.TestResult, $testRunDuration, $currentTestResult.testSummary, $VmData)
@@ -530,9 +583,58 @@ Class TestController
 		$testCaseLog = ($currentTestResult.testSummary + (Get-Content -Raw "$CurrentTestLogDir\$global:LogFileName")).Trim()
 		$this.JunitReport.CompleteLogTestCase("LISAv2Test-$($this.TestPlatform)","$currentTestName",$currentTestResult.TestResult,$testCaseLog)
 
-		# Set back the LogDir to the parent folder
-		Set-Variable -Name "LogDir" -Value $oldLogDir -Scope Global
 		return $currentTestResult
+	}
+
+	[void] RunTestCasesInParallel([int] $CountInParallel) {
+		$this.ParamsInParallel.Remove("RunInParallel")
+		$this.ParamsInParallel.Remove("TotalCountInParallel")
+		$parallelJobIds = [System.Collections.ArrayList]@()
+		for ($pIndex = 1; $pIndex -le $CountInParallel; $pIndex++) {
+			$parallelParams = ([System.Collections.Hashtable]$this.ParamsInParallel).Clone()
+			$parallelTestId = "$global:TestId-$pIndex"
+			if ($this.UseExistingRG) {
+				$parallelParams["RGIdentifier"] = "$($this.RGIdentifier)-$parallelTestId"
+			}
+			$parallelParams["TestIdInParallel"] = $parallelTestId
+			$parallelJob = Start-Job -Name "$parallelTestId" -ScriptBlock { Set-Location "$Using:PSScriptRoot\.."; $params = $Using:parallelParams; .\Run-LisaV2.ps1 @params }
+			$null = $parallelJobIds.Add($parallelJob.Id)
+		}
+		$parallelTestSummary = [System.Collections.ArrayList]@()
+		while ($parallelJobIds.Count -gt 0) {
+			for ($i = 0; $i -lt $parallelJobIds.Count; ) {
+				$jobId = $parallelJobIds[$i]
+				$parallelJob = Get-Job -Id $jobId
+				if ($parallelJob.State -eq "Running") {
+					Write-LogInfo "$($parallelJob.Name) is still running"
+				}
+				else {
+					Write-LogInfo "$($parallelJob.Name) finished"
+					$jobOutput = Receive-Job $parallelJob
+					$LogFile = Get-Item "$PSScriptRoot\..\TestResults\*$($parallelJob.Name)\*$($parallelJob.Name).log" | Sort-Object CreationTime -Descending | Select-Object -First 1
+					if ($logFile) {
+						$jobTestSummary = Select-String -Path $LogFile.FullName -Pattern "Test $($parallelJob.Name) finished" -Context 0, 100000000
+						$jobTestSummary.Context.PostContext | Select-Object -Skip 1 | Foreach-Object {
+							$null = $parallelTestSummary.Add($_)
+						}
+					}
+					$jobOutput | ForEach-Object {
+						Write-Log -Text $_
+					}
+					$parallelJobIds.RemoveAt($i)
+					break
+				}
+				$i++
+				if ($i -eq $parallelJobIds.Count) {
+					Write-LogInfo "There are $($parallelJobIds.Count) jobs are still running, will check again after 180 seconds..."
+					Start-Sleep -Seconds 180
+				}
+			}
+		}
+		Write-LogInfo "`r`n[[================ All Parallel Test Finished ================]]"
+		if ($parallelTestSummary) {
+			$this.TestSummary.TextSummary = $parallelTestSummary -join "`r`n"
+		}
 	}
 
 	[void] RunTestCasesInSequence([int]$TestIterations)
@@ -594,6 +696,17 @@ Class TestController
 						# By default set $vmData with $deployVMResults, because providers may return array of vmData directly if no errors.
 						$vmData = $deployVMResults
 						$deployErrors = Trim-ErrorLogMessage $deployVMResults.Error
+						# Az Powershell bug, and workarounds as: If deployed failed, due to some OSDisk are not deleted, try again to do deployment and only try once again
+						if ($deployErrors -imatch "Disk [\w-]+-OSDisk already exists in resource group") {
+							Write-LogWarn "Try deploy again when OSDisk is not deleted successfully from last test case deployment"
+							&$TryCleanupOnFailure -VmDataOnFailure ([ref]$vmData) -SetupTypeData $this.SetupTypeTable[$setupType]
+							$deployVMResults = $this.TestProvider.DeployVMs($this.GlobalConfig, $this.SetupTypeTable[$setupType], $currentTestCase, `
+								$currentTestCase.SetupConfig.TestLocation, $this.RGIdentifier, $this.UseExistingRG, $this.ResourceCleanup)
+							if ($deployVMResults) {
+								$vmData = $deployVMResults
+								$deployErrors = Trim-ErrorLogMessage $deployVMResults.Error
+							}
+						}
 						# override the $vmData if $deployResults give VmData specifically with property 'VmData'
 						if ($deployVMResults.Keys -and ($deployVMResults.Keys -contains "VmData")) {
 							$vmData = $deployVMResults.VmData
@@ -632,6 +745,11 @@ Class TestController
 								-testVMUser $global:user -testVMPassword $global:password
 						}
 					}
+				}
+				elseif ($vmData) {
+					# Get updated Initial Kernel for current Test Case, as last test case may updated kernel version
+					$global:InitialKernelVersion = Run-LinuxCmd -ip $vmData.PublicIP -port $vmData.SSHPort -username $global:user -password $global:password -command "uname -r"
+					Write-LogInfo "Initial Kernel Version: $global:InitialKernelVersion"
 				}
 				# Run current test case
 				Write-LogInfo "Run test case against the target machine ..."
@@ -693,7 +811,7 @@ Class TestController
 		if (!$RunInParallel) {
 			$this.RunTestCasesInSequence($TestIterations)
 		} else {
-			throw "Running test in parallel is not supported yet."
+			$this.RunTestCasesInParallel($this.TotalCountInParallel)
 		}
 
 		$this.JunitReport.CompleteLogTestSuite("LISAv2Test-$($this.TestPlatform)")
@@ -752,13 +870,9 @@ Class TestController
 				if ($LISMatch) {
 					$LISVersion = $LISMatch.Split(":").Trim()[1]
 				}
-				$FoundLineNumber = (Select-String -Path "$global:LogDir\$($vmData.RoleName)-dmesg.txt" -Pattern "Hyper-V Host Build").LineNumber
-				if (![string]::IsNullOrEmpty($FoundLineNumber)) {
-					$ActualLineNumber = $FoundLineNumber[-1] - 1
-					$FinalLine = [string]((Get-Content -Path "$global:LogDir\$($vmData.RoleName)-dmesg.txt")[$ActualLineNumber])
-					$FinalLine = $FinalLine.Replace('; Vmbus version:4.0', '')
-					$FinalLine = $FinalLine.Replace('; Vmbus version:3.0', '')
-					$HostVersion = ($FinalLine.Split(":")[$FinalLine.Split(":").Count - 1 ]).Trim().TrimEnd(";")
+				$HostBuildMatches = Select-string -Path "$global:LogDir\$($vmData.RoleName)-dmesg.txt" -Pattern "Hyper-V\s*Host.*Build:\s*([^a-zA-Z:;\s]+)"
+				if ($HostBuildMatches) {
+					$HostVersion = $HostBuildMatches.Matches.Groups[1].Value
 				}
 			}
 		}
@@ -778,14 +892,48 @@ Class TestController
 					$dataTableName = $this.XmlSecrets.secrets.TableName
 					Write-LogInfo "Using table name from secrets: $dataTableName"
 				} else {
-					$dataTableName = "LISAv2Results"
+					#$dataTableName = "LISAv2Results"
+					$dataTableName = "LISATestTelemetry"
 				}
 
+				$failureReason = ""
+				if ($CurrentTestResult.TestSummary) {
+					switch ($CurrentTestResult.TestSummary) {
+						{ $_ -imatch "The following list of images referenced from the deployment template are not found" } {
+							$failureReason = "Image is not available when deploying the image"
+							break
+						}
+						{ $_ -imatch 'Marketplace purchase eligibilty check returned errors. See inner errors for details' } {
+							$failureReason = "Purchase Plan Error - Marketplace purchase eligibilty check returned errors"
+							break
+						}
+						{ $_ -imatch 'Reboot : FAIL' -or `
+							(
+								$_ -imatch "Template output evaluation skipped: at least one resource deployment operation failed." `
+									-and `
+								(
+									$_ -imatch "VM [^\s]+ did not start in the allotted time. The VM may still start successfully. Please check the power state later." `
+										-or `
+										$_ -imatch "VM [^\s]+ did not finish in the allotted time. The VM may still finish provisioning successfully. Please check provisioning state later." `
+										-or `
+										$_ -imatch "OS Provisioning failed for VM [^\s]+ due to an internal error."
+								)
+							) } {
+							$failureReason = "VM did not boot up"
+							break
+						}
+						{ $_ -imatch 'Username specified for the VM is invalid for this Linux distribution.' -or $_ -imatch 'Calling function - Upload-RemoteFile. Error in upload after 10 attempt, hence giving up' } {
+							$failureReason = "Image configuration issue"
+							break
+						}
+						Default { if ($this.TestCasePassStatus -notcontains $CurrentTestResult.TestResult) { $failureReason = "Pending Triage" }; break }
+					}
+				}
 				$SQLQuery = Get-SQLQueryOfTelemetryData -TestPlatform $global:TestPlatform -TestLocation $CurrentTestData.SetupConfig.TestLocation -TestCategory $CurrentTestData.Category `
 					-TestArea $CurrentTestData.Area -TestName $CurrentTestData.TestName -CurrentTestResult $CurrentTestResult `
 					-ExecutionTag ($global:GlobalConfig).Global.($global:TestPlatform).ResultsDatabase.testTag -GuestDistro $GuestDistro -KernelVersion $global:FinalKernelVersion `
 					-HardwarePlatform $HardwarePlatform -LISVersion $LISVersion -HostVersion $HostVersion -VMSize $VMSize -VMGeneration $VMGen -Networking $Networking `
-					-ARMImageName $CurrentTestData.SetupConfig.ARMImageName -OsVHD $global:BaseOsVHD -BuildURL $env:BUILD_URL -TableName $dataTableName
+					-ARMImageName $CurrentTestData.SetupConfig.ARMImageName -OsVHD $global:BaseOsVHD -BuildURL $env:BUILD_URL -TableName $dataTableName -TestPassID $this.TestPassID -FailureReason $failureReason
 
 				Upload-TestResultToDatabase -SQLQuery $SQLQuery
 

@@ -247,7 +247,7 @@ Function Move-OsVHDToStorageAccount($OriginalOsVHD, $TargetStorageAccount) {
 		}
 	}
 	else {
-		$sc = Get-AzStorageAccount | Where-Object {$_.StorageAccountName -eq $TargetStorageAccount}
+		$sc = Get-LISAStorageAccount | Where-Object {$_.StorageAccountName -eq $TargetStorageAccount}
 		$storageKey = (Get-AzStorageAccountKey -ResourceGroupName $sc.ResourceGroupName -Name $TargetStorageAccount)[0].Value
 		$context = New-AzStorageContext -StorageAccountName $TargetStorageAccount -StorageAccountKey $storageKey
 		$blob = Get-AzStorageBlob -Blob $vhdName -Container "vhds" -Context $context -ErrorAction Ignore
@@ -362,10 +362,8 @@ Function PrepareAutoCompleteStorageAccounts ($storageAccountsRGName, $XMLSecretF
 			$AzureSecretXml.Save($AzureSecretFile)
 		}
 	}
-	$azLocations = Get-AzLocation
-	$regionsSupportSA = ((Get-AzResourceProvider -ProviderNamespace "Microsoft.Storage").ResourceTypes | `
+	$allAvailableRegions = ((Get-AzResourceProvider -ProviderNamespace "Microsoft.Storage").ResourceTypes | `
 			Where-Object ResourceTypeName -eq "storageaccounts").Locations
-	$allAvailableRegions = $azLocations | Where-Object { $regionsSupportSA -contains $_.DisplayName } | Select-Object -ExpandProperty Location
 	# Create ResourceGroup for StorageAccounts to run LISAv2
 	$getRGResult = Get-AzResourceGroup -Name $storageAccountsRGName -ErrorAction SilentlyContinue
 	if (!$getRGResult.ResourceGroupName ) {
@@ -379,7 +377,7 @@ Function PrepareAutoCompleteStorageAccounts ($storageAccountsRGName, $XMLSecretF
 		Write-LogInfo "$storageAccountsRGName already exists."
 	}
 	$regionStorageMapping = @{}
-	$existingLISAStorageAccounts = Get-AzStorageAccount -ResourceGroupName $storageAccountsRGName
+	$existingLISAStorageAccounts = Get-LISAStorageAccount -ResourceGroupName $storageAccountsRGName
 	$lisaSANum = 0
 	$lisaSAPrefix = 'lisa'
 	$existingLISAStorageAccounts | ForEach-Object {
@@ -397,7 +395,7 @@ Function PrepareAutoCompleteStorageAccounts ($storageAccountsRGName, $XMLSecretF
 		}
 	}
 
-	if (((2 * $allAvailableRegions.Length) -ne $lisaSANum)) {
+	if ((2 * $allAvailableRegions.Count) -gt $lisaSANum) {
 		foreach ($region in $allAvailableRegions) {
 			if (!$regionStorageMapping.$region) {
 				$regionStorageMapping[$region] = @{}
@@ -421,8 +419,11 @@ Function PrepareAutoCompleteStorageAccounts ($storageAccountsRGName, $XMLSecretF
 		}
 		&$UpdateSecretFileWithStorageAccounts -AzureSecretFile $XMLSecretFile -RSAMapping $regionStorageMapping
 	}
-	else {
+	elseif ((2 * $allAvailableRegions.Count) -eq $lisaSANum) {
 		&$UpdateSecretFileWithStorageAccounts -AzureSecretFile $XMLSecretFile -RSAMapping $regionStorageMapping
+	}
+	else {
+		Throw "Existing count of StorageAccounts [$lisaSANum] is larger than `$allAvailableRegions.Count [$($allAvailableRegions.Count)] * 2"
 	}
 }
 
@@ -498,30 +499,7 @@ Function Invoke-AllResourceGroupDeployments($SetupTypeData, $CurrentTestData, $R
 			}
 			$numberOfVMs += 1
 		}
-
-		$saInfoCollected = $false
-		$retryCount = 0
-		$maxRetryCount = 999
-		while (!$saInfoCollected -and ($retryCount -lt $maxRetryCount)) {
-			try {
-				$retryCount += 1
-				Write-LogInfo "[Attempt $retryCount/$maxRetryCount] : Getting Existing Storage account information..."
-				$GetAzureRMStorageAccount = $null
-				$GetAzureRMStorageAccount = Get-AzStorageAccount
-				if ($null -eq $GetAzureRMStorageAccount) {
-					$saInfoCollected = $false
-				}
-				else {
-					$saInfoCollected = $true
-				}
-			}
-			catch {
-				Write-LogErr "Error in fetching Storage Account info. Retrying in 10 seconds."
-				Start-Sleep -Seconds 10
-				$saInfoCollected = $false
-			}
-		}
-
+		$GetAzureRMStorageAccount = Get-LISAStorageAccount
 		# Consolidate and use 'Premium_LRS' and 'Standard_LRS' only
 		$StorageAccountType = ($GetAzureRMStorageAccount | Where-Object { $_.StorageAccountName -eq $StorageAccountName }).Sku.Tier.ToString()
 		if ($StorageAccountType -match 'Premium') {
@@ -543,6 +521,11 @@ Function Invoke-AllResourceGroupDeployments($SetupTypeData, $CurrentTestData, $R
 			$offer = $imageInfo[1]
 			$sku = $imageInfo[2]
 			$version = $imageInfo[3]
+			$terms = Get-AzMarketplaceTerms -Publisher $publisher -Product $offer -Name $sku -ErrorAction SilentlyContinue
+			if ($terms -and !$terms.Accepted) {
+				Write-LogInfo "Accept terms for Publisher $publisher, Product $offer, Name $sku"
+				$terms | Set-AzMarketplaceTerms -Accept | Out-Null
+			}
 		}
 
 		$vmCount = 0
@@ -1348,13 +1331,19 @@ Function Invoke-AllResourceGroupDeployments($SetupTypeData, $CurrentTestData, $R
 			Add-Content -Value "$($indents[3])^type^: ^Microsoft.Compute/virtualMachines^," -Path $jsonFile
 			Add-Content -Value "$($indents[3])^name^: ^$vmName^," -Path $jsonFile
 			Add-Content -Value "$($indents[3])^location^: ^[variables('location')]^," -Path $jsonFile
-			if ($publisher -imatch "clear-linux-project") {
-				Write-LogInfo "  Adding plan information for clear-linux.."
+			if ($version -ne "latest") {
+				$used_image = Get-AzVMImage -Location $Location -PublisherName $publisher -Offer $offer -Skus $sku -Version $version
+			} else {
+				$used_image = Get-AzVMImage -Location $Location -PublisherName $publisher -Offer $offer -Skus $sku
+				$used_image = Get-AzVMImage -Location $Location -PublisherName $publisher -Offer $offer -Skus $sku -Version $used_image[-1].Version
+			}
+			if ($used_image.PurchasePlan) {
+				Write-LogInfo "  Adding plan information: plan name - $($used_image.PurchasePlan.Name), product - $($used_image.PurchasePlan.Product), publisher -$($used_image.PurchasePlan.Publisher)."
 				Add-Content -Value "$($indents[3])^plan^:" -Path $jsonFile
 				Add-Content -Value "$($indents[3]){" -Path $jsonFile
-				Add-Content -Value "$($indents[4])^name^: ^$sku^," -Path $jsonFile
-				Add-Content -Value "$($indents[4])^product^: ^clear-linux-os^," -Path $jsonFile
-				Add-Content -Value "$($indents[4])^publisher^: ^clear-linux-project^" -Path $jsonFile
+				Add-Content -Value "$($indents[4])^name^: ^$($used_image.PurchasePlan.Name)^," -Path $jsonFile
+				Add-Content -Value "$($indents[4])^product^: ^$($used_image.PurchasePlan.Product)^," -Path $jsonFile
+				Add-Content -Value "$($indents[4])^publisher^: ^$($used_image.PurchasePlan.Publisher)^" -Path $jsonFile
 				Add-Content -Value "$($indents[3])}," -Path $jsonFile
 			}
 			Add-Content -Value "$($indents[3])^tags^: {^TestID^: ^$TestID^}," -Path $jsonFile
@@ -1595,6 +1584,24 @@ Function Invoke-AllResourceGroupDeployments($SetupTypeData, $CurrentTestData, $R
 					$dataDiskAdded = $true
 				}
 			}
+			foreach ( $dataDisk in $used_image.DataDiskImages ) {
+				if ( $dataDisk.LUN -ge 0 ) {
+					if ( $dataDiskAdded ) {
+						Add-Content -Value "$($indents[6])," -Path $jsonFile
+					}
+					Add-Content -Value "$($indents[6]){" -Path $jsonFile
+					Add-Content -Value "$($indents[7])^name^: ^$vmName-disk-lun-$($dataDisk.LUN)^," -Path $jsonFile
+					Add-Content -Value "$($indents[7])^diskSizeGB^: ^1024^," -Path $jsonFile
+					Add-Content -Value "$($indents[7])^lun^: ^$($dataDisk.LUN)^," -Path $jsonFile
+					Add-Content -Value "$($indents[7])^createOption^: ^FromImage^," -Path $jsonFile
+					Add-Content -Value "$($indents[7])^caching^: ^ReadOnly^," -Path $jsonFile
+					Add-Content -Value "$($indents[7])^managedDisk^:" -Path $jsonFile
+					Add-Content -Value "$($indents[7]){" -Path $jsonFile
+					Add-Content -Value "$($indents[8])^storageAccountType^: ^$StorageAccountType^" -Path $jsonFile
+					Add-Content -Value "$($indents[7])}" -Path $jsonFile
+					Add-Content -Value "$($indents[6])}" -Path $jsonFile
+				}
+			}
 			Add-Content -Value "$($indents[5])]" -Path $jsonFile
 			Add-Content -Value "$($indents[4])}" -Path $jsonFile
 			Add-Content -Value "$($indents[4])," -Path $jsonFile
@@ -1744,6 +1751,7 @@ Function Invoke-AllResourceGroupDeployments($SetupTypeData, $CurrentTestData, $R
 						$DeploymentElapsedTime = $DeploymentEndTime - $DeploymentStartTime
 						if ( $CreateRGDeployments.Status ) {
 							$retValue = "True"
+							$outputError = $null
 							$isResourceGroupDeploymentCompleted = "True"
 							$resourceGroupCount = $resourceGroupCount + 1
 							if ($resourceGroupCount -eq 1) {
@@ -1756,11 +1764,42 @@ Function Invoke-AllResourceGroupDeployments($SetupTypeData, $CurrentTestData, $R
 						else {
 							$outputError = "Unable to Deploy one or more VMs, the Error Message is: `n" + $CreateRGDeployments.Error
 							Write-LogErr $outputError
+							$retryDeployment = $retryDeployment + 1
+							$retValue = "False"
+							$isResourceGroupDeploymentCompleted = "False"
 
 							if ($ResourceCleanup -imatch "Keep") {
 								Write-LogInfo "Keeping Failed deployment for this Resoruce Group: $groupName, as -ResourceCleanup = Keep is Set."
 							}
 							else {
+								if ($UseExistingRG -and !$removedOSDisk -and $CreateRGDeployments.Error -imatch "Disk [\w-]+-OSDisk already exists in resource group") {
+									$osDiskResourceName = ([Regex]::Matches($CreateRGDeployments.Error, "Disk ([\w-]+-OSDisk) already exists in resource group") | Select-Object -Last 1).Groups[1].Value
+									$osDiskResource = Get-AzResource -ResourceName $osDiskResourceName -ResourceGroupName $groupName
+									$retryCountForOSDisk = 60
+									$rC = 1
+									while (!$osDiskResource) {
+										Write-LogWarn "Could not get OSDisk resource for '$osDiskResourceName', retry after 10 seconds"
+										Start-Sleep -Seconds 10
+										$osDiskResource = Get-AzResource -ResourceName $osDiskResourceName -ResourceGroupName $groupName
+										if($rC++ -gt $retryCountForOSDisk) {
+											break
+										}
+									}
+									if ($osDiskResource) {
+										Write-LogInfo "Successfully get OSDisk resource for '$osDiskResourceName', start deleting"
+										Remove-AzResource -ResourceId $osDiskResource.ResourceId -Force | Out-Null
+										$removedOSDisk = $true
+									}
+									else {
+										Write-LogWarn "Could not get OSDisk resource for '$osDiskResourceName' after 600 seconds, maybe deployment continue failed"
+										$osDiskRG = Get-AzResourceGroup -Name $groupName
+										if ($osDiskRG -and $CurrentTestData.SetupConfig.TiPSessionId) {
+											Remove-AzResourceGroup -Name $groupName -Force | Out-Null
+											$removedOSDisk = $true
+											$isResourceGroupCreated = Create-ResourceGroup -RGName $groupName -location $location -CurrentTestData $CurrentTestData
+										}
+									}
+								}
 								# Clean up the failed deployment by default, as the deployment failure is not useful for debugging/repro
 								#, $errMsg contains all necessary information
 								$isCleaned = Delete-ResourceGroup -RGName $groupName -UseExistingRG $UseExistingRG -PatternOfResourceNamePrefix $patternOfResourceNamePrefix
@@ -1770,10 +1809,11 @@ Function Invoke-AllResourceGroupDeployments($SetupTypeData, $CurrentTestData, $R
 								else {
 									Write-LogInfo "Cleanup successful for $groupName."
 								}
+								# if successfully removed -OSDisk resource for UsingExistRG, retry again.
+								if ($removedOSDisk -and $isCleaned) {
+									$retryDeployment = $retryDeployment - 1
+								}
 							}
-							$retryDeployment = $retryDeployment + 1
-							$retValue = "False"
-							$isResourceGroupDeploymentCompleted = "False"
 						}
 					}
 					else {
@@ -1822,7 +1862,7 @@ Function Start-DeleteResourceGroup ([string]$RGName) {
 		[void](Remove-Item -Path $XmlFilePath -Force)
 
 		# Get the required resource details.
-		$StorageAccounts = Get-AzStorageAccount
+		$StorageAccounts = Get-LISAStorageAccount
 		$VMs = Get-AzVm -ResourceGroupName $ResourceGroupName
 
 		# Start the VM Cleanup
@@ -1871,10 +1911,10 @@ Function Start-DeleteResourceGroup ([string]$RGName) {
 		# Remove the resource group which will remove all the remaining resources.
 		$MaxRetryAttemts = 10
 		Write-LogInfo "[Background Job] : Removing Resource Group : $ResourceGroupName"
-		$RemoveJob = Remove-AzResourceGroup -ResourceGroupName $ResourceGroupName -Force -AsJob
-		$isDeleting = (Get-AzResourceGroup -ResourceGroupName $ResourceGroupName).ProvisioningState -eq "Deleting"
+		$RemoveJob = Remove-AzResourceGroup -Name $ResourceGroupName -Force -AsJob
+		$isDeleting = (Get-AzResourceGroup -Name $ResourceGroupName).ProvisioningState -eq "Deleting"
 		while (!$isDeleting -and $MaxRetryAttemts -gt 0) {
-			$RgStatus = (Get-AzResourceGroup -ResourceGroupName $ResourceGroupName).ProvisioningState
+			$RgStatus = (Get-AzResourceGroup -Name $ResourceGroupName).ProvisioningState
 			$MaxRetryAttemts -= 1
 			$isDeleting = $RgStatus -eq "Deleting"
 			Write-LogInfo "[Background Job] : Removing Resource Group : $ResourceGroupName : $RgStatus. Remaining attempts - $MaxRetryAttemts"
@@ -1946,13 +1986,13 @@ Function Start-DeleteResourceGroup ([string]$RGName) {
 	if (-not $BackgroundCleanupStarted) {
 		# Give 30 seconds to start all the Resource group cleanup operation.
 		$MaxRetryAttemts = 10
-		$null = Remove-AzResourceGroup -ResourceGroupName $RGName -AsJob -Force
-		$isDeleting = (Get-AzResourceGroup -ResourceGroupName $RGName).ProvisioningState -eq "Deleting"
+		$null = Remove-AzResourceGroup -Name $RGName -AsJob -Force
+		$isDeleting = (Get-AzResourceGroup -Name $RGName).ProvisioningState -eq "Deleting"
 		while (!$isDeleting -and $MaxRetryAttemts -gt 0) {
 			$MaxRetryAttemts -= 1
-			Write-LogInfo "Retrying 'Remove-AzResourceGroup -ResourceGroupName $RGName'. Remaining attempts : $MaxRetryAttemts"
-			$null = Remove-AzResourceGroup -ResourceGroupName $RGName -AsJob -Force
-			$isDeleting = (Get-AzResourceGroup -ResourceGroupName $RGName).ProvisioningState -eq "Deleting"
+			Write-LogInfo "Retrying 'Remove-AzResourceGroup -Name $RGName'. Remaining attempts : $MaxRetryAttemts"
+			$null = Remove-AzResourceGroup -Name $RGName -AsJob -Force
+			$isDeleting = (Get-AzResourceGroup -Name $RGName).ProvisioningState -eq "Deleting"
 			Start-Sleep -Seconds 3
 		}
 	}
@@ -2202,7 +2242,7 @@ Function Get-AllDeploymentData([string]$ResourceGroups, [string]$PatternOfResour
 		# Only NetworkInterface and OSDisk resource will always have the same prefix in Name as it's owner in Name (the VM Name)
 		$NICdata = Get-AzResource -ResourceGroupName $ResourceGroup -ResourceType "Microsoft.Network/networkInterfaces" -Verbose `
 		| Where-Object { $vmResourcePattern -and ($_.Name -imatch $vmResourcePattern) }
-		$currentRGLocation = (Get-AzResourceGroup -ResourceGroupName $ResourceGroup).Location
+		$currentRGLocation = (Get-AzResourceGroup -Name $ResourceGroup).Location
 
 		Write-LogInfo "    Microsoft.Network/loadBalancers data collection in progress.."
 		# (LISAv2 deploy this resource type with constant Name value in template file)
@@ -2320,32 +2360,74 @@ Function Create-RGDeploymentWithTempParameters([string]$RGName, $TemplateFile, $
 	return $retValue
 }
 
+Function Get-LISAStorageAccount ($ResourceGroupName, $Name) {
+	$retryCount = 0
+	$maxRetryCount = 999
+	$GetAzureRMStorageAccount = $null
+	$useAsJob = (Get-Command -Name Get-AzStorageAccount).Parameters.Keys -contains 'AsJob'
+	while (!$GetAzureRMStorageAccount -and ($retryCount -lt $maxRetryCount)) {
+		try {
+			$retryCount += 1
+			Write-LogInfo "[Attempt $retryCount/$maxRetryCount] : Getting Existing Storage account information..."
+			# 10 seconds here will probably incorrect, set as 20 seconds waiting time
+			$waitTimeInSecond = 20
+			if ($useAsJob) {
+				if (!$ResourceGroupName -and !$Name) {
+					$job = Get-AzStorageAccount -AsJob
+				}
+				elseif ($ResourceGroupName) {
+					$job = Get-AzStorageAccount -ResourceGroupName $ResourceGroupName -AsJob
+				}
+				elseif ($ResourceGroupName -and $Name) {
+					$job = Get-AzStorageAccount -ResourceGroupName $ResourceGroupName -Name $Name -AsJob
+				}
+				$job | Wait-Job -Timeout $waitTimeInSecond | Out-Null
+
+				if ($job.State -eq "Completed") {
+					$GetAzureRMStorageAccount = Receive-Job $job
+					Remove-Job $job -Force -ErrorAction SilentlyContinue
+					break
+				}
+				else {
+					Remove-Job $job -Force -ErrorAction SilentlyContinue
+				}
+			}
+			else {
+				if (!$ResourceGroupName -and !$Name) {
+					$GetAzureRMStorageAccount = Get-AzStorageAccount
+					break
+				}
+				elseif ($ResourceGroupName) {
+					$GetAzureRMStorageAccount = Get-AzStorageAccount -ResourceGroupName $ResourceGroupName
+					break
+				}
+				elseif ($ResourceGroupName -and $Name) {
+					$GetAzureRMStorageAccount = Get-AzStorageAccount -ResourceGroupName $ResourceGroupName -Name $Name
+					break
+				}
+			}
+		}
+		catch {
+			Write-LogErr "Error in fetching Storage Account info. Retrying in 10 seconds."
+			Start-Sleep -Seconds 10
+			$GetAzureRMStorageAccount = $null
+		}
+	}
+	if ($retryCount -ge $maxRetryCount) {
+		Throw "Could not get AzStorageAccount info after 999 attempts"
+	}
+	else {
+		Write-LogInfo "Get Storage Account information successfully"
+	}
+	return $GetAzureRMStorageAccount
+}
+
 Function Copy-VHDToAnotherStorageAccount ($sourceStorageAccount, $sourceStorageContainer, $destinationStorageAccount, $destinationStorageContainer, $vhdName, $destVHDName, $SasUrl) {
 	$retValue = $false
 	if (!$destVHDName) {
 		$destVHDName = $vhdName
 	}
-	$saInfoCollected = $false
-	$retryCount = 0
-	$maxRetryCount = 999
-	while (!$saInfoCollected -and ($retryCount -lt $maxRetryCount)) {
-		try {
-			$retryCount += 1
-			Write-LogInfo "[Attempt $retryCount/$maxRetryCount] : Getting Existing Storage Account details ..."
-			$GetAzureRmStorageAccount = $null
-			$GetAzureRmStorageAccount = Get-AzStorageAccount
-			if ($null -eq $GetAzureRmStorageAccount) {
-				throw
-			}
-			$saInfoCollected = $true
-		}
-		catch {
-			$saInfoCollected = $false
-			Write-LogErr "Error in fetching Storage Account info. Retrying in 10 seconds."
-			Start-Sleep -Seconds 10
-		}
-	}
-
+	$GetAzureRMStorageAccount  = Get-LISAStorageAccount
 	if ( !$SasUrl ) {
 		Write-LogInfo "Retrieving $sourceStorageAccount storage account key"
 		$SrcStorageAccountKey = (Get-AzStorageAccountKey -ResourceGroupName $(($GetAzureRmStorageAccount  | Where-Object { $_.StorageAccountName -eq "$sourceStorageAccount" }).ResourceGroupName) -Name $sourceStorageAccount)[0].Value
@@ -2699,7 +2781,7 @@ function Get-AzureBootDiagnostics {
 			try {
 				$uri = [System.Uri]$vmStatus.BootDiagnostics.SerialConsoleLogBlobUri
 				$storageAccountName = $uri.Host.Split(".")[0]
-				$diagnosticRG = ((Get-AzStorageAccount) | Where-Object { $_.StorageAccountName -eq $storageAccountName }).ResourceGroupName.ToString()
+				$diagnosticRG = ((Get-LISAStorageAccount) | Where-Object { $_.StorageAccountName -eq $storageAccountName }).ResourceGroupName.ToString()
 				$key = (Get-AzStorageAccountKey -ResourceGroupName $diagnosticRG -Name $storageAccountName)[0].value
 				$diagContext = New-AzStorageContext -StorageAccountName $storageAccountName -StorageAccountKey $key
 				Get-AzStorageBlobContent -Blob $uri.LocalPath.Split("/")[2] `
@@ -2807,8 +2889,7 @@ function Add-AzureAccountFromSecretsFile {
 		$subIDMasked = "$($subIDSplitted[0])-xxxx-xxxx-xxxx-$($subIDSplitted[4])"
 
 		# Collect the context files, if any.
-		$ContextFiles = (Get-ChildItem -Path $PWD -Recurse | `
-				Where-Object { $_.Name.EndsWith(".json") } | Select-String -Pattern "AzureCloud" | Select-Object Path).Path | Get-Unique
+		$ContextFiles = (Get-ChildItem -Path "$PWD\*.json" | Select-String -Pattern "AzureCloud" | Select-Object Path).Path | Get-Unique
 
 		Write-LogInfo "------------------------------------------------------------------"
 		if ($ClientID -and $Key) {
@@ -2924,7 +3005,7 @@ Function Upload-AzureBootAndDeploymentDataToDB ($DeploymentTime, $AllVMData, $Cu
 		else {
 			$OsVHdStorageAccountName = $StorageProfile.OsDisk.Vhd.Uri.Split(".").split("/")[2]
 			$StorageResourceGroup = (Get-AzResource  | Where-Object { $_.ResourceType -imatch "Microsoft.Storage/storageAccounts" -and $_.Name -eq "$OsVHdStorageAccountName" }).ResourceGroupName
-			$StorageType = (Get-AzStorageAccount -ResourceGroupName $StorageResourceGroup -Name $OsVHdStorageAccountName).Sku.Name
+			$StorageType = (Get-LISAStorageAccount -ResourceGroupName $StorageResourceGroup -Name $OsVHdStorageAccountName).Sku.Name
 		}
 		$NumberOfVMsInRG = 0
 		foreach ( $vmData in $allVMData ) {

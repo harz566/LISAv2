@@ -733,7 +733,7 @@ function Install-CustomKernel ($CustomKernel, $allVMData, [switch]$RestartAfterU
 						Write-LogInfo "Package Installation Status for $($job.RoleName) : $currentStatus"
 						$packageInstallJobsRunning = $true
 						if ($currentStatus -imatch $kernelMatchSuccess) {
-							Stop-Job -Id $job.ID -Confirm:$false -ErrorAction SilentlyContinue
+							Remove-Job -Id $job.ID -Force -ErrorAction SilentlyContinue
 						}
 					} else {
 						if ( !(Test-Path -Path "$LogDir\$($job.RoleName)-build-CustomKernel.txt" ) ) {

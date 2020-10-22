@@ -144,7 +144,7 @@ Class AzureController : TestController
 				# and update content of .XML\RegionAndStorageAccounts.xml
 				PrepareAutoCompleteStorageAccounts -storageAccountsRGName $storageAccountRG -XMLSecretFile $XMLSecretFile
 			}
-			if ($this.UseExistingRG) {
+			if ($this.UseExistingRG -and !$this.RunInParallel) {
 				$existingRG = Get-AzResourceGroup -Name $this.RGIdentifier -ErrorAction SilentlyContinue
 				if (!$existingRG) {
 					if ($this.CustomParams["TipSessionId"] -or $this.CustomParams["TipCluster"]) {
@@ -309,60 +309,62 @@ Class AzureController : TestController
 	}
 
 	[void] PrepareSetupTypeToTestCases([hashtable]$SetupTypeToTestCases, [System.Collections.ArrayList]$AllTests) {
-		# Inject Networking=SRIOV/Synthetic, DiskType=Managed, OverrideVMSize to test case data
-		if (("sriov", "synthetic") -contains $this.CustomParams["Networking"]) {
-			Add-SetupConfig -AllTests $AllTests -ConfigName "Networking" -ConfigValue $this.CustomParams["Networking"] -Force $this.ForceCustom
-		}
-		if (("managed", "unmanaged") -contains $this.CustomParams["DiskType"]) {
-			Add-SetupConfig -AllTests $AllTests -ConfigName "DiskType" -ConfigValue $this.CustomParams["DiskType"] -Force $this.ForceCustom
-		}
-		if (("Specialized", "Generalized") -contains $this.CustomParams["ImageType"]) {
-			Add-SetupConfig -AllTests $AllTests -ConfigName "ImageType" -ConfigValue $this.CustomParams["ImageType"] -Force $this.ForceCustom
-		}
-		if (("Windows", "Linux") -contains $this.CustomParams["OSType"]) {
-			Add-SetupConfig -AllTests $AllTests -ConfigName "OSType" -ConfigValue $this.CustomParams["OSType"] -Force $this.ForceCustom
-		}
-		if ($this.CustomParams.TiPSessionId -and $this.CustomParams.TiPCluster -and $this.CustomParams.PlatformFaultDomainCount -and $this.CustomParams.PlatformUpdateDomainCount) {
-			Add-SetupConfig -AllTests $AllTests -ConfigName "TiPSessionId" -ConfigValue $this.CustomParams.TiPSessionId -Force $true
-			Add-SetupConfig -AllTests $AllTests -ConfigName "TiPCluster" -ConfigValue $this.CustomParams.TiPCluster -Force $true
-			Add-SetupConfig -AllTests $AllTests -ConfigName "PlatformFaultDomainCount" -ConfigValue $this.CustomParams.PlatformFaultDomainCount -Force $true
-			Add-SetupConfig -AllTests $AllTests -ConfigName "PlatformUpdateDomainCount" -ConfigValue $this.CustomParams.PlatformUpdateDomainCount -Force $true
-		}
-		else {
-			Add-SetupConfig -AllTests $AllTests -ConfigName "PlatformFaultDomainCount" -ConfigValue $this.CustomParams.PlatformFaultDomainCount -Force $this.ForceCustom
-			Add-SetupConfig -AllTests $AllTests -ConfigName "PlatformUpdateDomainCount" -ConfigValue $this.CustomParams.PlatformUpdateDomainCount -Force $this.ForceCustom
-		}
+		if (!$this.TestIdInParallel) {
+			# Inject Networking=SRIOV/Synthetic, DiskType=Managed, OverrideVMSize to test case data
+			if (("sriov", "synthetic") -contains $this.CustomParams["Networking"]) {
+				Add-SetupConfig -AllTests $AllTests -ConfigName "Networking" -ConfigValue $this.CustomParams["Networking"] -Force $this.ForceCustom
+			}
+			if (("managed", "unmanaged") -contains $this.CustomParams["DiskType"]) {
+				Add-SetupConfig -AllTests $AllTests -ConfigName "DiskType" -ConfigValue $this.CustomParams["DiskType"] -Force $this.ForceCustom
+			}
+			if (("Specialized", "Generalized") -contains $this.CustomParams["ImageType"]) {
+				Add-SetupConfig -AllTests $AllTests -ConfigName "ImageType" -ConfigValue $this.CustomParams["ImageType"] -Force $this.ForceCustom
+			}
+			if (("Windows", "Linux") -contains $this.CustomParams["OSType"]) {
+				Add-SetupConfig -AllTests $AllTests -ConfigName "OSType" -ConfigValue $this.CustomParams["OSType"] -Force $this.ForceCustom
+			}
+			if ($this.CustomParams.TiPSessionId -and $this.CustomParams.TiPCluster -and $this.CustomParams.PlatformFaultDomainCount -and $this.CustomParams.PlatformUpdateDomainCount) {
+				Add-SetupConfig -AllTests $AllTests -ConfigName "TiPSessionId" -ConfigValue $this.CustomParams.TiPSessionId -Force $true
+				Add-SetupConfig -AllTests $AllTests -ConfigName "TiPCluster" -ConfigValue $this.CustomParams.TiPCluster -Force $true
+				Add-SetupConfig -AllTests $AllTests -ConfigName "PlatformFaultDomainCount" -ConfigValue $this.CustomParams.PlatformFaultDomainCount -Force $true
+				Add-SetupConfig -AllTests $AllTests -ConfigName "PlatformUpdateDomainCount" -ConfigValue $this.CustomParams.PlatformUpdateDomainCount -Force $true
+			}
+			else {
+				Add-SetupConfig -AllTests $AllTests -ConfigName "PlatformFaultDomainCount" -ConfigValue $this.CustomParams.PlatformFaultDomainCount -Force $this.ForceCustom
+				Add-SetupConfig -AllTests $AllTests -ConfigName "PlatformUpdateDomainCount" -ConfigValue $this.CustomParams.PlatformUpdateDomainCount -Force $this.ForceCustom
+			}
 
-		# Multiple TestLocations (parameter '-TestLocation' with value like 'eastus,westus') means to deploy from different Regions,
-		# so spliting with default Splitby (','), and apply multi single ConfigValues to $AllTests one by one.
-		Add-SetupConfig -AllTests $AllTests -ConfigName "TestLocation" -ConfigValue $this.CustomParams["TestLocation"] -Force $this.ForceCustom
-		if ($this.TestIterations -gt 1) {
-			$testIterationsParamValue = @(1..$this.TestIterations) -join ','
-			Add-SetupConfig -AllTests $AllTests -ConfigName "TestIteration" -ConfigValue $testIterationsParamValue -Force $this.ForceCustom
-		}
-		Add-SetupConfig -AllTests $AllTests -ConfigName "OverrideVMSize" -ConfigValue $this.CustomParams["OverrideVMSize"] -Force $this.ForceCustom
-		Add-SetupConfig -AllTests $AllTests -ConfigName "OsVHD" -ConfigValue $this.CustomParams["OsVHD"] -Force $this.ForceCustom
-		# 'OsVHD' should not coexist with 'ARMImageName', when OsVHD exist, take OsVHD as prioritized than ARMImageName
-		if (!$this.CustomParams["OsVHD"]) {
-			Add-SetupConfig -AllTests $AllTests -ConfigName "ARMImageName" -ConfigValue $this.CustomParams["ARMImageName"] -DefaultConfigValue $this.GlobalConfig.Global.Azure.DefaultARMImageName -Force $this.ForceCustom
-		}
-		else {
-			# Only when 'OsVHD' exist from parameters, then we should Add-SetupConfig for 'VMGeneration',
-			#   because HyperVGeneration property for Azure Gallery Image is only decided by the 'ARMImageName' (Publisher, Provider, SKU, Version),
-			#   and from ARM template constraint, there's no Generation property to be applied when deploying with Gallery image with (Publisher, Provider, SKU, Version)
-			Add-SetupConfig -AllTests $AllTests -ConfigName "VMGeneration" -ConfigValue $this.CustomParams["VMGeneration"] -DefaultConfigValue "1" -Force $this.ForceCustom
-		}
-		if ($this.CustomParams["StorageAccountType"]) {
-			Add-SetupConfig -AllTests $AllTests -ConfigName "StorageAccountType" -ConfigValue $this.CustomParams["StorageAccountType"] -Force $this.ForceCustom
-		}
-		if ($this.CustomParams["SetupType"]) {
-			Add-SetupConfig -AllTests $AllTests -ConfigName "SetupType" -ConfigValue $this.CustomParams["SetupType"] -Force $this.ForceCustom
-		}
-		if ($this.CustomParams["SecureBoot"] -imatch "^(true|false)$") {
-			Add-SetupConfig -AllTests $AllTests -ConfigName "SecureBoot" -ConfigValue $this.CustomParams["SecureBoot"].ToLower() -Force $this.ForceCustom
-		}
-		if ($this.CustomParams["vTPM"] -imatch "^(true|false)$") {
-			Add-SetupConfig -AllTests $AllTests -ConfigName "vTPM" -ConfigValue $this.CustomParams["vTPM"].ToLower() -Force $this.ForceCustom
+			# Multiple TestLocations (parameter '-TestLocation' with value like 'eastus,westus') means to deploy from different Regions,
+			# so spliting with default Splitby (','), and apply multi single ConfigValues to $AllTests one by one.
+			Add-SetupConfig -AllTests $AllTests -ConfigName "TestLocation" -ConfigValue $this.CustomParams["TestLocation"] -Force $this.ForceCustom
+			if ($this.TestIterations -gt 1) {
+				$testIterationsParamValue = @(1..$this.TestIterations) -join ','
+				Add-SetupConfig -AllTests $AllTests -ConfigName "TestIteration" -ConfigValue $testIterationsParamValue -Force $this.ForceCustom
+			}
+			Add-SetupConfig -AllTests $AllTests -ConfigName "OverrideVMSize" -ConfigValue $this.CustomParams["OverrideVMSize"] -Force $this.ForceCustom
+			Add-SetupConfig -AllTests $AllTests -ConfigName "OsVHD" -ConfigValue $this.CustomParams["OsVHD"] -Force $this.ForceCustom
+			# 'OsVHD' should not coexist with 'ARMImageName', when OsVHD exist, take OsVHD as prioritized than ARMImageName
+			if (!$this.CustomParams["OsVHD"]) {
+				Add-SetupConfig -AllTests $AllTests -ConfigName "ARMImageName" -ConfigValue $this.CustomParams["ARMImageName"] -DefaultConfigValue $this.GlobalConfig.Global.Azure.DefaultARMImageName -Force $this.ForceCustom
+			}
+			else {
+				# Only when 'OsVHD' exist from parameters, then we should Add-SetupConfig for 'VMGeneration',
+				#   because HyperVGeneration property for Azure Gallery Image is only decided by the 'ARMImageName' (Publisher, Provider, SKU, Version),
+				#   and from ARM template constraint, there's no Generation property to be applied when deploying with Gallery image with (Publisher, Provider, SKU, Version)
+				Add-SetupConfig -AllTests $AllTests -ConfigName "VMGeneration" -ConfigValue $this.CustomParams["VMGeneration"] -DefaultConfigValue "1" -Force $this.ForceCustom
+			}
+			if ($this.CustomParams["StorageAccountType"]) {
+				Add-SetupConfig -AllTests $AllTests -ConfigName "StorageAccountType" -ConfigValue $this.CustomParams["StorageAccountType"] -Force $this.ForceCustom
+			}
+			if ($this.CustomParams["SetupType"]) {
+				Add-SetupConfig -AllTests $AllTests -ConfigName "SetupType" -ConfigValue $this.CustomParams["SetupType"] -Force $this.ForceCustom
+			}
+			if ($this.CustomParams["SecureBoot"] -imatch "^(true|false)$") {
+				Add-SetupConfig -AllTests $AllTests -ConfigName "SecureBoot" -ConfigValue $this.CustomParams["SecureBoot"].ToLower() -Force $this.ForceCustom
+			}
+			if ($this.CustomParams["vTPM"] -imatch "^(true|false)$") {
+				Add-SetupConfig -AllTests $AllTests -ConfigName "vTPM" -ConfigValue $this.CustomParams["vTPM"].ToLower() -Force $this.ForceCustom
+			}
 		}
 
 		foreach ($test in $AllTests) {
@@ -383,23 +385,28 @@ Class AzureController : TestController
 		$AllTests.SetupConfig.OverrideVMSize | Sort-Object -Unique | Foreach-Object {
 			if (!($global:AllTestVMSizes.$_)) { $global:AllTestVMSizes["$_"] = @{} }
 		}
+		$allTestSetupTypes = $AllTests.SetupConfig.SetupType | Sort-Object -Unique
+		$SetupTypeXMLs = Get-ChildItem -Path "$PSScriptRoot\..\XML\VMConfigurations\*.xml"
+		foreach ($file in $SetupTypeXMLs.FullName) {
+			$setupXml = [xml]( Get-Content -Path $file)
+			foreach ($SetupType in $setupXml.TestSetup.ChildNodes) {
+				if ($allTestSetupTypes -contains $SetupType.LocalName) {
+					$vmSizes = $SetupType.ResourceGroup.VirtualMachine.InstanceSize | Sort-Object -Unique
+					$vmSizes | ForEach-Object {
+						if (!$global:AllTestVMSizes."$_") {
+							$global:AllTestVMSizes["$_"] = @{}
+						}
+					}
+				}
+			}
+		}
 		$this.TotalCaseNum = ([System.Collections.ArrayList]$AllTests).Count
 	}
 
 	[void] LoadTestCases($WorkingDirectory, $CustomTestParameters) {
 		([TestController]$this).LoadTestCases($WorkingDirectory, $CustomTestParameters)
-
-		$SetupTypeXMLs = Get-ChildItem -Path "$WorkingDirectory\XML\VMConfigurations\*.xml"
-		foreach ($file in $SetupTypeXMLs.FullName) {
-			$setupXml = [xml]( Get-Content -Path $file)
-			foreach ($SetupType in $setupXml.TestSetup.ChildNodes) {
-				$vmSizes = $SetupType.ResourceGroup.VirtualMachine.InstanceSize | Sort-Object -Unique
-				$vmSizes | ForEach-Object {
-					if (!$global:AllTestVMSizes."$_") { $global:AllTestVMSizes["$_"] = @{} }
-				}
-			}
+		if (!$this.RunInParallel) {
+			Measure-SubscriptionCapabilities
 		}
-
-		Measure-SubscriptionCapabilities
 	}
 }
