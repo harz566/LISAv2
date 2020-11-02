@@ -26,10 +26,8 @@
 ###############################################################################################
 using Module ".\TestProvider.psm1"
 
-Class AzureProvider : TestProvider
-{
-	[string] $TipSessionId
-	[string] $TipCluster
+Class AzureProvider : TestProvider {
+	[bool] $RunWithTiP = $false
 	[bool] $EnableTelemetry
 	[string] $PlatformFaultDomainCount
 	[string] $PlatformUpdateDomainCount
@@ -42,7 +40,7 @@ Class AzureProvider : TestProvider
 		$DeploymentElapsedTime = $null
 		$ErrorMessage = ""
 		$patternOfResourceNamePrefix = ($SetupTypeData.ResourceGroup | Select-Object -ExpandProperty "VirtualMachine" `
-			| Where-Object {$_.RoleName -imatch '[^\s]+'} | Select-Object -ExpandProperty RoleName) -join '|'
+			| Where-Object { $_.RoleName -imatch '[^\s]+' } | Select-Object -ExpandProperty RoleName) -join '|'
 		try {
 			if ($UseExistingRG) {
 				Write-LogInfo "Running test against existing resource group: $RGIdentifier"
@@ -64,17 +62,19 @@ Class AzureProvider : TestProvider
 					if ($TestCaseData.SetupConfig.OSType -notcontains "Windows") {
 						$null = Detect-LinuxDistro -VIP $allVMData[0].PublicIP -SSHport $allVMData[0].SSHPort -testVMUser $global:user -testVMPassword $global:password
 					}
-				} else {
+				}
+				else {
 					$ErrorMessage = "One or more deployments failed. " + $isAllDeployed[4]
 					Write-LogErr $ErrorMessage
-					return @{"VmData" = $allVMData; "Error" = $ErrorMessage}
+					return @{"VmData" = $allVMData; "Error" = $ErrorMessage }
 				}
 			}
 			$isVmAlive = Is-VmAlive -AllVMDataObject $allVMData
 			if ($isVmAlive -eq "True") {
 				if (($this.EnableTelemetry -and !$UseExistingRG)) {
 					$null = Upload-AzureBootAndDeploymentDataToDB -allVMData $allVMData -DeploymentTime $DeploymentElapsedTime.TotalSeconds -CurrentTestData $TestCaseData
-				} else {
+				}
+				else {
 					Write-LogInfo "Skipping boot data telemetry collection."
 				}
 
@@ -85,7 +85,7 @@ Class AzureProvider : TestProvider
 					if (!$customStatus) {
 						$ErrorMessage = "Failed to set custom config in VMs."
 						Write-LogErr $ErrorMessage
-						return @{"VmData" = $allVMData; "Error" = $ErrorMessage}
+						return @{"VmData" = $allVMData; "Error" = $ErrorMessage }
 					}
 				}
 			}
@@ -94,9 +94,10 @@ Class AzureProvider : TestProvider
 				#, to indicate there's deployment errors, and TestController will handle those errors
 				$ErrorMessage = "Unable to connect to deployed VMs..."
 				Write-LogErr $ErrorMessage
-				return @{"VmData" = $allVMData; "Error" = $ErrorMessage}
+				return @{"VmData" = $allVMData; "Error" = $ErrorMessage }
 			}
-		} catch {
+		}
+		catch {
 			Write-LogErr "Exception detected. Source : DeployVMs()"
 			$line = $_.InvocationInfo.ScriptLineNumber
 			$script_name = ($_.InvocationInfo.ScriptName).Replace($PWD, ".")
@@ -104,16 +105,21 @@ Class AzureProvider : TestProvider
 			Write-LogErr "EXCEPTION : $ErrorMessage"
 			Write-LogErr "Source : Line $line in script $script_name."
 		}
-		return @{"VmData" = $allVMData; "Error" = $ErrorMessage}
+		return @{"VmData" = $allVMData; "Error" = $ErrorMessage }
 	}
 
 	[void] DeleteVMs($allVMData, $SetupTypeData, $UseExistingRG) {
-		if ($allVMData) {
-			$patternOfResourceNamePrefix = ($allVMData | Where-Object {$_.RoleName -imatch '[^\s]+'} | Select-Object -ExpandProperty RoleName) -Join '|'
+		if ($this.RunWithTiP) {
+			$patternOfResourceNamePrefix = '.*'
 		}
 		else {
-			$patternOfResourceNamePrefix = ($SetupTypeData.ResourceGroup | Select-Object -ExpandProperty "VirtualMachine" `
-				| Where-Object {$_.RoleName -imatch '[^\s]+'} | Select-Object -ExpandProperty RoleName) -join '|'
+			if ($allVMData) {
+				$patternOfResourceNamePrefix = ($allVMData | Where-Object { $_.RoleName -imatch '[^\s]+' } | Select-Object -ExpandProperty RoleName) -Join '|'
+			}
+			else {
+				$patternOfResourceNamePrefix = ($SetupTypeData.ResourceGroup | Select-Object -ExpandProperty "VirtualMachine" `
+					| Where-Object { $_.RoleName -imatch '[^\s]+' } | Select-Object -ExpandProperty RoleName) -join '|'
+			}
 		}
 		$rgs = @()
 		foreach ($vmData in $allVMData) {
@@ -122,12 +128,10 @@ Class AzureProvider : TestProvider
 		$uniqueRgs = $rgs | Select-Object -Unique
 		foreach ($rg in $uniqueRgs) {
 			$isCleaned = Delete-ResourceGroup -RGName $rg -UseExistingRG $UseExistingRG -PatternOfResourceNamePrefix $patternOfResourceNamePrefix
-			if (!$isCleaned)
-			{
+			if (!$isCleaned) {
 				Write-LogInfo "Failed to trigger delete resource group $rg.. Please delete it manually."
 			}
-			else
-			{
+			else {
 				Write-LogInfo "Successfully started clean up for RG ${rg}.."
 			}
 		}
@@ -139,7 +143,8 @@ Class AzureProvider : TestProvider
 		foreach ( $vmData in $AllVMData ) {
 			if (Restart-VMFromShell -VMData $vmData -SkipRestartCheck) {
 				Write-Loginfo "Restart-VMFromShell executes successfully."
-			} else {
+			}
+			else {
 				Write-LogErr "Restart-VMFromShell executes failed."
 				return $false
 			}
@@ -171,9 +176,8 @@ Class AzureProvider : TestProvider
 		return $false
 	}
 
-	[void] RunTestCaseCleanup ($AllVMData, $CurrentTestData, $CurrentTestResult, $CollectVMLogs, $RemoveFiles, $User, $Password, $SetupTypeData, $TestParameters){
-		try
-		{
+	[void] RunTestCaseCleanup ($AllVMData, $CurrentTestData, $CurrentTestResult, $CollectVMLogs, $RemoveFiles, $User, $Password, $SetupTypeData, $TestParameters) {
+		try {
 			if ($CurrentTestData.CleanupScript) {
 				foreach ($vmData in $AllVMData) {
 					foreach ($script in $($CurrentTestData.CleanupScript).Split(",")) {
@@ -183,9 +187,8 @@ Class AzureProvider : TestProvider
 			}
 			([TestProvider]$this).RunTestCaseCleanup($AllVMData, $CurrentTestData, $CurrentTestResult, $CollectVMLogs, $RemoveFiles, $User, $Password, $SetupTypeData, $TestParameters)
 		}
-		catch
-		{
-			$ErrorMessage =  $_.Exception.Message
+		catch {
+			$ErrorMessage = $_.Exception.Message
 			Write-Output "EXCEPTION in RunTestCaseCleanup : $ErrorMessage"
 		}
 	}

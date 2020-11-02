@@ -36,7 +36,7 @@ Function Measure-SubscriptionCapabilities() {
 		}
 
 		Set-Variable -Name SubscriptionVMResourceSkus -Option ReadOnly -Scope script `
-			-Value (Get-AzComputeResourceSku | Where-Object { $_.ResourceType.Contains("virtualMachines") -and ($_.Restrictions.Type -notcontains 'Location')} | Select-Object Name, @{l = "Location"; e = { $_.Locations[0] } }, Family, Restrictions, Capabilities | Where-Object { $regionScopeFromUser -contains "$($_.Location)" })
+			-Value (Get-AzComputeResourceSku | Where-Object { $_.ResourceType.Contains("virtualMachines") -and ($_.Restrictions.Type -notcontains 'Location') } | Select-Object Name, @{l = "Location"; e = { $_.Locations[0] } }, Family, Restrictions, Capabilities | Where-Object { $regionScopeFromUser -contains "$($_.Location)" })
 		Set-Variable -Name TestableLocations -Option ReadOnly -Scope script -Value ($SubscriptionVMResourceSkus | Group-Object Location | Select-Object -ExpandProperty Name)
 	}
 
@@ -227,8 +227,8 @@ Function Assert-ResourceLimitationForDeployment($RGXMLData, [ref]$TargetLocation
 }
 
 Function Move-OsVHDToStorageAccount($OriginalOsVHD, $TargetStorageAccount) {
-	$sourceStorageAccount = $OriginalOsVHD.Replace("https://","").Replace("http://","").Split(".")[0]
-	$sourceContainer =  $OriginalOsVHD.Split("/")[$OriginalOsVHD.Split("/").Count - 2]
+	$sourceStorageAccount = $OriginalOsVHD.Replace("https://", "").Replace("http://", "").Split(".")[0]
+	$sourceContainer = $OriginalOsVHD.Split("/")[$OriginalOsVHD.Split("/").Count - 2]
 	$vhdName = $OriginalOsVHD.Split("?")[0].split('/')[-1]
 
 	$targetOsVHD = 'http://{0}.blob.core.windows.net/vhds/{1}' -f $TargetStorageAccount, $vhdName
@@ -247,7 +247,7 @@ Function Move-OsVHDToStorageAccount($OriginalOsVHD, $TargetStorageAccount) {
 		}
 	}
 	else {
-		$sc = Get-LISAStorageAccount | Where-Object {$_.StorageAccountName -eq $TargetStorageAccount}
+		$sc = Get-LISAStorageAccount | Where-Object { $_.StorageAccountName -eq $TargetStorageAccount }
 		$storageKey = (Get-AzStorageAccountKey -ResourceGroupName $sc.ResourceGroupName -Name $TargetStorageAccount)[0].Value
 		$context = New-AzStorageContext -StorageAccountName $TargetStorageAccount -StorageAccountKey $storageKey
 		$blob = Get-AzStorageBlob -Blob $vhdName -Container "vhds" -Context $context -ErrorAction Ignore
@@ -1333,7 +1333,8 @@ Function Invoke-AllResourceGroupDeployments($SetupTypeData, $CurrentTestData, $R
 			Add-Content -Value "$($indents[3])^location^: ^[variables('location')]^," -Path $jsonFile
 			if ($version -ne "latest") {
 				$used_image = Get-AzVMImage -Location $Location -PublisherName $publisher -Offer $offer -Skus $sku -Version $version
-			} else {
+			}
+			else {
 				$used_image = Get-AzVMImage -Location $Location -PublisherName $publisher -Offer $offer -Skus $sku
 				$used_image = Get-AzVMImage -Location $Location -PublisherName $publisher -Offer $offer -Skus $sku -Version $used_image[-1].Version
 			}
@@ -1781,7 +1782,7 @@ Function Invoke-AllResourceGroupDeployments($SetupTypeData, $CurrentTestData, $R
 										Write-LogWarn "Could not get OSDisk resource for '$osDiskResourceName', retry after 10 seconds"
 										Start-Sleep -Seconds 10
 										$osDiskResource = Get-AzResource -ResourceName $osDiskResourceName -ResourceGroupName $groupName
-										if($rC++ -gt $retryCountForOSDisk) {
+										if ($rC++ -gt $retryCountForOSDisk) {
 											break
 										}
 									}
@@ -2027,7 +2028,12 @@ Function Delete-ResourceGroup([string]$RGName, [bool]$UseExistingRG, [string]$Pa
 		# "Microsoft.Authorization/locks" is the standard ResourceType for RG locks
 		$rgLock = (Get-AzResourceLock -ResourceGroupName $RGName).ResourceType -eq "Microsoft.Authorization/locks"
 		if (-not $rgLock) {
-			if ($UseExistingRG) {
+			if ($UseExistingRG -and $PatternOfResourceNamePrefix -eq '.*') {
+				Remove-AzResourceGroup -Name $RGName -Force | Out-Null
+				Write-LogInfo "Resource Group of '$RGName' were deleted."
+				$retValue = $true
+			}
+			elseif ($UseExistingRG) {
 				$attempts = 0
 				if ($PatternOfResourceNamePrefix) {
 					$PatternOfResourceNamePrefix += '|disk|NIC'
@@ -2427,7 +2433,7 @@ Function Copy-VHDToAnotherStorageAccount ($sourceStorageAccount, $sourceStorageC
 	if (!$destVHDName) {
 		$destVHDName = $vhdName
 	}
-	$GetAzureRMStorageAccount  = Get-LISAStorageAccount
+	$GetAzureRMStorageAccount = Get-LISAStorageAccount
 	if ( !$SasUrl ) {
 		Write-LogInfo "Retrieving $sourceStorageAccount storage account key"
 		$SrcStorageAccountKey = (Get-AzStorageAccountKey -ResourceGroupName $(($GetAzureRmStorageAccount  | Where-Object { $_.StorageAccountName -eq "$sourceStorageAccount" }).ResourceGroupName) -Name $sourceStorageAccount)[0].Value

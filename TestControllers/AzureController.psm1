@@ -27,8 +27,7 @@
 using Module ".\TestController.psm1"
 using Module "..\TestProviders\AzureProvider.psm1"
 
-Class AzureController : TestController
-{
+Class AzureController : TestController {
 	[string] $ARMImageName
 	[string] $StorageAccount
 
@@ -88,9 +87,9 @@ Class AzureController : TestController
 		}
 		elseif ($this.ARMImageName) {
 			$ArmImagesToBeUsed = @($this.ARMImageName.Trim(", ").Split(',').Trim())
-			if ($ArmImagesToBeUsed | Where-Object {$_.Split(" ").Count -ne 4}) {
+			if ($ArmImagesToBeUsed | Where-Object { $_.Split(" ").Count -ne 4 }) {
 				$parameterErrors += ("Invalid value for the provided ARMImageName parameter: <'$($this.ARMImageName)'>." + `
-									 "The ARM image should be in the format: '<Publisher> <Offer> <Sku> <Version>,<Publisher> <Offer> <Sku> <Version>,...'")
+						"The ARM image should be in the format: '<Publisher> <Offer> <Sku> <Version>,<Publisher> <Offer> <Sku> <Version>,...'")
 			}
 		}
 
@@ -100,6 +99,7 @@ Class AzureController : TestController
 			}
 			# Force $this.UseExistingRG = $true when testing with TiP, and always stick to the provided Resoruce Group by '-RGIdentifier'
 			$this.UseExistingRG = $true
+			$this.TestProvider.RunWithTiP = $true
 			if (!$this.TestLocation) {
 				$parameterErrors += "'-TestLocation' is necessary when Run-LISAv2 with 'TiPSessionId' and 'TiPCluster'."
 			}
@@ -128,7 +128,8 @@ Class AzureController : TestController
 		if ($parameterErrors.Count -gt 0) {
 			$parameterErrors | ForEach-Object { Write-LogErr $_ }
 			throw "Failed to validate the test parameters provided. Please fix above issues and retry."
-		} else {
+		}
+		else {
 			Write-LogInfo "Test parameters for Azure have been validated successfully. Continue running the test."
 		}
 	}
@@ -147,7 +148,7 @@ Class AzureController : TestController
 			if ($this.UseExistingRG -and !$this.RunInParallel) {
 				$existingRG = Get-AzResourceGroup -Name $this.RGIdentifier -ErrorAction SilentlyContinue
 				if (!$existingRG) {
-					if ($this.CustomParams["TipSessionId"] -or $this.CustomParams["TipCluster"]) {
+					if ($this.TestProvider.RunWithTiP) {
 						# Create resource group for TiP if resource group does not exist, as '$this.TestLocation' always available after ParseAndValidateParameters()
 						Write-LogInfo "Resource group '$($this.RGIdentifier)' does not exist, create it for TiP"
 						Create-ResourceGroup -RGName $this.RGIdentifier -location $this.TestLocation | Out-Null
@@ -158,7 +159,7 @@ Class AzureController : TestController
 				}
 				else {
 					$allExistingResources = Get-AzResource -ResourceGroupName $this.RGIdentifier
-					if (($this.CustomParams["TipSessionId"] -or $this.CustomParams["TipCluster"]) -and $allExistingResources) {
+					if ($this.TestProvider.RunWithTiP -and $allExistingResources) {
 						Write-LogInfo "Try to cleanup all resources from Resource Group '$($this.RGIdentifier)' for testing with TiP..."
 						$isResoruceCleanedExceptAvailabilitySet = Delete-ResourceGroup -RGName $this.RGIdentifier -UseExistingRG $this.UseExistingRG
 						if ($isResoruceCleanedExceptAvailabilitySet) {
@@ -186,7 +187,8 @@ Class AzureController : TestController
 		$RegionAndStorageMapFile = "$PSScriptRoot\..\XML\RegionAndStorageAccounts.xml"
 		if (Test-Path $RegionAndStorageMapFile) {
 			$RegionAndStorageMap = [xml](Get-Content $RegionAndStorageMapFile)
-		} else {
+		}
+		else {
 			throw "File '$RegionAndStorageMapFile' does not exist"
 		}
 		$azureConfig = $this.GlobalConfig.Global.Azure
@@ -219,17 +221,18 @@ Class AzureController : TestController
 			}
 			elseif ($this.StorageAccount -and ($this.StorageAccount -inotmatch "^Auto_Complete_RG=.+")) {
 				# $this.StorageAccount should be some exact name of Storage Account
-				$sc = Get-AzStorageAccount | Where-Object {$_.StorageAccountName -eq $this.StorageAccount}
+				$sc = Get-AzStorageAccount | Where-Object { $_.StorageAccountName -eq $this.StorageAccount }
 				if (!$sc) {
 					Throw "Provided storage account $($this.StorageAccount) does not exist, abort testing."
 				}
-				if($sc.Location -ne $this.TestLocation) {
+				if ($sc.Location -ne $this.TestLocation) {
 					Throw "Provided storage account $($this.StorageAccount) location $($sc.Location) is different from test location $($this.TestLocation), abort testing."
 				}
 				$azureConfig.Subscription.ARMStorageAccount = $this.StorageAccount.Trim()
 				Write-LogInfo "Selecting custom storage account : $($azureConfig.Subscription.ARMStorageAccount) as per your test region."
 			}
-			else { # else means $this.StorageAccount is empty, or $this.StorageAccount is like 'Auto_Complete_RG=Xxx'
+			else {
+				# else means $this.StorageAccount is empty, or $this.StorageAccount is like 'Auto_Complete_RG=Xxx'
 				$azureConfig.Subscription.ARMStorageAccount = $RegionAndStorageMap.AllRegions.$($this.TestLocation).StandardStorage
 				Write-LogInfo "Auto selecting storage account : $($azureConfig.Subscription.ARMStorageAccount) as per your test region."
 			}
@@ -247,14 +250,14 @@ Class AzureController : TestController
 			}
 			elseif ($this.StorageAccount -and ($this.StorageAccount -inotmatch "^ExistingStorage_Standard") -and ($this.StorageAccount -inotmatch "^Auto_Complete_RG=.+")) {
 				# $this.StorageAccount should be some exact name of Storage Account
-				$sc = Get-AzStorageAccount | Where-Object {$_.StorageAccountName -eq $this.StorageAccount}
+				$sc = Get-AzStorageAccount | Where-Object { $_.StorageAccountName -eq $this.StorageAccount }
 				if (!$sc) {
 					Throw "Provided storage account $($this.StorageAccount) does not exist, abort testing."
 				}
 				if ($sc.Sku.Name -eq "Premium_LRS") {
 					$this.SyncEquivalentCustomParameters("StorageAccountType", "Premium_LRS")
 				}
-				if(!$this.TestLocation) {
+				if (!$this.TestLocation) {
 					Write-LogWarn "'-TestLocation' parameter is empty, choose the storage account '$($this.StorageAccount)' location '$($sc.Location)' as default TestLocation"
 					$this.TestLocation = $sc.Location
 					$this.SyncEquivalentCustomParameters("TestLocation", $this.TestLocation)
@@ -370,13 +373,14 @@ Class AzureController : TestController
 		foreach ($test in $AllTests) {
 			# Put test case to hashtable, per setupType,OverrideVMSize,networking,diskType,osDiskType,switchName
 			$key = "$($test.SetupConfig.SetupType),$($test.SetupConfig.OverrideVMSize),$($test.SetupConfig.Networking),$($test.SetupConfig.DiskType)," +
-				"$($test.SetupConfig.OSDiskType),$($test.SetupConfig.SwitchName),$($test.SetupConfig.ImageType)," +
-				"$($test.SetupConfig.OSType),$($test.SetupConfig.StorageAccountType),$($test.SetupConfig.TestLocation)," +
-				"$($test.SetupConfig.ARMImageName),$($test.SetupConfig.OsVHD),$($test.SetupConfig.VMGeneration),$($test.SetupConfig.SecureBoot),$($test.SetupConfig.vTPM)"
+			"$($test.SetupConfig.OSDiskType),$($test.SetupConfig.SwitchName),$($test.SetupConfig.ImageType)," +
+			"$($test.SetupConfig.OSType),$($test.SetupConfig.StorageAccountType),$($test.SetupConfig.TestLocation)," +
+			"$($test.SetupConfig.ARMImageName),$($test.SetupConfig.OsVHD),$($test.SetupConfig.VMGeneration),$($test.SetupConfig.SecureBoot),$($test.SetupConfig.vTPM)"
 			if ($test.SetupConfig.SetupType) {
 				if ($SetupTypeToTestCases.ContainsKey($key)) {
 					$SetupTypeToTestCases[$key] += $test
-				} else {
+				}
+				else {
 					$SetupTypeToTestCases.Add($key, @($test))
 				}
 			}

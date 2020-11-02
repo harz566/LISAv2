@@ -51,15 +51,15 @@ Function Get-SQLQueryOfTelemetryData ($TestPlatform, $TestLocation, $TestCategor
 		$SQLQuery = "INSERT INTO $TableName (DateTimeUTC,TestPlatform,TestLocation,TestCategory,TestArea,TestName,TestResult,ExecutionTag,GuestDistro,KernelVersion,HardwarePlatform,LISVersion,HostVersion,VMSize,VMGeneration,ARMImage,OsVHD,LogFile,BuildURL,TestPassID,FailureReason,TestResultDetails) VALUES "
 		$SQLQuery += "('$DateTimeUTC','$TestPlatform','$TestLocation','$TestCategory','$TestArea','$TestName','$testResult','$ExecutionTag','$GuestDistro','$KernelVersion','$HardwarePlatform','$LISVersion','$HostVersion','$VMSize','$VMGeneration','$ARMImageName','$OsVHD','$UploadedURL','$BuildURL','$TestPassID','$FailureReason',"
 		$TestResultDetailsValue = ""
-		if ($Networking) {
-			$TestResultDetailsValue += "Networking: $Networking; `r`n"
-		}
 		if ($TestSummary) {
 			foreach ($tempResult in $TestSummary.Split('>')) {
 				if ($tempResult) {
 					$TestResultDetailsValue += $tempResult.Trim().Replace("<br /", "; `r`n")
 				}
 			}
+		}
+		if ($Networking) {
+			$TestResultDetailsValue += "Networking: $Networking; `r`n"
 		}
 		$SQLQuery += "'$TestResultDetailsValue')"
 		Write-LogInfo "Get the SQL query of test results:  done"
@@ -94,7 +94,7 @@ Function Invoke-IngestKustoFromTSQL([string]$SQLString) {
 						$columns = @($matchGroup.Value.Split(',').Trim())
 					}
 					elseif ($matchGroup.Name -eq "values") {
-						$valueArr = @($matchGroup.Captures.Value | Where-Object {$_ -ne ""})
+						$valueArr = @($matchGroup.Captures.Value | Where-Object { $_ -ne "" })
 					}
 				}
 				if ($tableName -and $columns -and $valueArr) {
@@ -123,10 +123,10 @@ Function Invoke-IngestKustoFromTSQL([string]$SQLString) {
 					foreach ($rowValue in $valueArr) {
 						$ingestValueArray = @($kustoTableColumns)
 						$cellValueIndex = 0
-						$cellValueArray = @(($rowValue | Select-String -Pattern "\'([^\']*)\'" -AllMatches).Matches | ForEach-Object {$_.Groups[1].Value})
+						$cellValueArray = @(($rowValue | Select-String -Pattern "\'([^\']*)\'" -AllMatches).Matches | ForEach-Object { $_.Groups[1].Value })
 						for ($tableColumnIndex = 0; $tableColumnIndex -lt $kustoTableColumns.Count; $tableColumnIndex++) {
 							if ($columns -contains $kustoTableColumns[$tableColumnIndex]) {
-								$ingestValueArray[$tableColumnIndex] = $cellValueArray[$cellValueIndex++].Replace(",", " ")
+								$ingestValueArray[$tableColumnIndex] = $cellValueArray[$cellValueIndex++].Replace(",", " ").Replace("""", "'")
 							}
 							else {
 								$ingestValueArray[$tableColumnIndex] = ""
@@ -160,8 +160,8 @@ Function Invoke-IngestKustoFromTSQL([string]$SQLString) {
 		Write-LogInfo "Source : Line $line in script $scriptName."
 	}
 	finally {
-		if ($queryProvider) {$queryProvider.Dispose()}
-		if ($adminProvider) {$adminProvider.Dispose()}
+		if ($queryProvider) { $queryProvider.Dispose() }
+		if ($adminProvider) { $adminProvider.Dispose() }
 	}
 }
 
@@ -201,7 +201,8 @@ Function Upload-TestResultToDatabase ([String]$SQLQuery) {
 					if ($retry -lt $maxRetry) {
 						Start-Sleep -Seconds 1
 						Write-LogWarn "Retring, attempt $retry"
-					} else {
+					}
+					else {
 						# throw from catch, in order to be caught by caller module/function
 						throw $_.Exception
 					}
